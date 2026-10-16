@@ -12,7 +12,7 @@ import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/datab
 import providerRouter from '@/modules/providers/provider.routes.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
-import type { BackgroundTaskSummary, WorkflowAgentActivity } from '@/shared/types.js';
+import type { BackgroundTaskSummary, SubagentActivityRead, WorkflowAgentActivity } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
 async function withProviderServer(
@@ -538,5 +538,49 @@ test('the workflow agent route reads an agent\'s timeline and status from its ru
     const missing = await missingResponse.json() as { error: { code: string } };
     assert.equal(missingResponse.status, 404);
     assert.equal(missing.error.code, 'WORKFLOW_AGENT_NOT_FOUND');
+  });
+});
+
+const AGENT_SESSION_ID = 'claude-agent-routes-session';
+const AGENT_ID = 'a5c0ffee5c0ffee51';
+
+test('the agent route reads what a session\'s subagent was asked and what it has done so far', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    // A background agent's card polls this while it runs: its transcript is
+    // the only place its progress lands until it reports back.
+    const sessionPath = path.join(workspacePath, `${AGENT_SESSION_ID}.jsonl`);
+    await mkdir(workspacePath, { recursive: true });
+    await writeFile(sessionPath, `${JSON.stringify({ type: 'user', uuid: 'u1', sessionId: AGENT_SESSION_ID, timestamp: '2026-10-16T06:05:00.000Z', message: { role: 'user', content: 'survey the repo' } })}\n`, 'utf8');
+    const subagentDir = path.join(workspacePath, AGENT_SESSION_ID, 'subagents');
+    await mkdir(subagentDir, { recursive: true });
+    const rows = [
+      { parentUuid: null, isSidechain: true, agentId: AGENT_ID, type: 'user', uuid: 'su1', timestamp: '2026-10-16T06:05:01.000Z', message: { role: 'user', content: 'List every package in the repo.\nReport their names.' } },
+      { parentUuid: 'su1', isSidechain: true, agentId: AGENT_ID, type: 'assistant', uuid: 'sa1', timestamp: '2026-10-16T06:05:03.000Z', message: { role: 'assistant', model: 'claude-haiku-5-5', content: [{ type: 'tool_use', id: 'toolu_glob', name: 'Glob', input: { pattern: '**/package.json' } }] } },
+      { parentUuid: 'sa1', isSidechain: true, agentId: AGENT_ID, type: 'user', uuid: 'su2', timestamp: '2026-10-16T06:05:04.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_glob', content: 'package.json' }] } },
+    ];
+    await writeFile(path.join(subagentDir, `agent-${AGENT_ID}.jsonl`), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+    await writeFile(path.join(subagentDir, `agent-${AGENT_ID}.meta.json`), JSON.stringify({ agentType: 'Explore', description: 'Survey the repo', toolUseId: 'toolu_agent' }), 'utf8');
+    const now = new Date().toISOString();
+    sessionsDb.createSession(AGENT_SESSION_ID, 'claude', workspacePath, 'Agent session', now, now, sessionPath);
+
+    const agentUrl = (agentId: string) => `${baseUrl}/api/providers/sessions/${AGENT_SESSION_ID}/agents/${agentId}`;
+
+    const response = await fetch(agentUrl(AGENT_ID));
+    const read = (await response.json() as { data: SubagentActivityRead }).data;
+    assert.equal(response.status, 200);
+    assert.deepEqual(read.agent, { id: AGENT_ID, type: 'Explore', description: 'Survey the repo', model: 'claude-haiku-5-5' });
+    assert.equal(read.prompt, 'List every package in the repo.\nReport their names.');
+    assert.equal(read.activityCount, 1);
+    assert.equal(read.activity[0]?.toolName, 'Glob');
+    assert.deepEqual(read.activity[0]?.toolResult, { content: 'package.json', isError: false });
+
+    // The id names a file under the session directory.
+    const invalid = await fetch(agentUrl('..%2Fagent-a5c0ffee5c0ffee51'));
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json() as { error: { code: string } }).error.code, 'INVALID_AGENT_ID');
+
+    const missing = await fetch(agentUrl('a0000000000000000'));
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json() as { error: { code: string } }).error.code, 'SUBAGENT_NOT_FOUND');
   });
 });

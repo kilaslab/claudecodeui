@@ -11,6 +11,7 @@ import type {
   FetchHistoryResult,
   NormalizedMessage,
   SubagentActivity,
+  SubagentActivityRead,
   SubagentInfo,
   TaskUsage,
   WorkflowAgentActivity,
@@ -94,7 +95,24 @@ type ClaudeSubagentTranscript = {
   model?: string;
   /** When the agent's first row was written: the moment it was spawned. */
   startedAt?: string;
+  /** The task the agent was given: the text of its transcript's first user row. */
+  prompt?: string;
 };
+
+/** The text of a user row, or undefined for a row of tool results. */
+function readUserRowText(content: unknown): string | undefined {
+  if (typeof content === 'string') {
+    return content.trim() ? content : undefined;
+  }
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const text = (content as AnyRecord[])
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text as string)
+    .join('\n\n');
+  return text.trim() ? text : undefined;
+}
 
 /**
  * Flattens one subagent transcript into the shared activity timeline.
@@ -107,6 +125,8 @@ async function readClaudeSubagentTranscript(filePath: string): Promise<ClaudeSub
   const activity: SubagentActivity[] = [];
   const transcript: ClaudeSubagentTranscript = { activity };
   const toolsById = new Map<string, SubagentActivity>();
+  // Only the first user row is the task; later ones carry tool results.
+  let sawUserRow = false;
 
   try {
     const fileStream = fs.createReadStream(filePath);
@@ -155,6 +175,11 @@ async function readClaudeSubagentTranscript(filePath: string): Promise<ClaudeSub
               activity.push({ kind: 'thinking', content: part.thinking, timestamp });
             }
           }
+        }
+
+        if (entry.message?.role === 'user' && !sawUserRow) {
+          sawUserRow = true;
+          transcript.prompt = readUserRowText(entry.message.content);
         }
 
         if (entry.message?.role === 'user' && Array.isArray(entry.message?.content)) {
@@ -1722,6 +1747,43 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         model: transcript.model,
         status,
       },
+      activity: transcript.activity
+        .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
+        .map(truncateSubagentActivity),
+      activityCount: transcript.activity.length,
+    };
+  }
+
+  /**
+   * Reads one subagent's task and timeline from the transcript it writes for
+   * itself under `<projectDir>/<providerSessionId>/subagents/`, the same file
+   * history attaches to its launch row, capped the same way.
+   */
+  async readSubagentActivity(sessionId: string, agentId: string): Promise<SubagentActivityRead | null> {
+    const session = sessionsDb.getSessionById(sessionId);
+    const jsonlPath = session?.jsonl_path;
+    const providerSessionId = session?.provider_session_id;
+    if (!jsonlPath || !providerSessionId) {
+      return null;
+    }
+
+    const location = await findClaudeSubagentTranscript(path.dirname(jsonlPath), providerSessionId, agentId);
+    if (!location) {
+      return null;
+    }
+
+    const [transcript, meta] = await Promise.all([
+      readClaudeSubagentTranscript(location.transcriptPath),
+      readClaudeSubagentMeta(location.metaPath),
+    ]);
+    return {
+      agent: {
+        id: agentId,
+        type: meta.agentType,
+        description: meta.description,
+        model: transcript.model,
+      },
+      prompt: transcript.prompt,
       activity: transcript.activity
         .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
         .map(truncateSubagentActivity),

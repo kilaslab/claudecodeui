@@ -1,12 +1,28 @@
 import { memo, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Bot, ChevronRight, CircleAlert, CircleCheck, CircleDashed } from 'lucide-react';
 
 import type { DiffLine, LiveTaskStatus, Project, SubagentActivity, SubagentInfo, ToolResult } from '@/shared/types';
+import { api, readApiJson } from '@/shared/api';
 import { cn } from '@/shared/utils';
 import { SubagentTimeline } from '@/modules/chat/tools/SubagentTimeline';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
+import { useTranscriptSessionId } from '@/modules/chat/context/TranscriptSessionContext';
+import { useAgentTimelinePoll } from '@/modules/chat/hooks/useAgentTimelinePoll';
 import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownContent';
-import { resolveBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
+import { formatTaskDuration, resolveBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
+
+/** What the agent route answers: the subagent's task and timeline, read from its own transcript. */
+type SubagentActivityRead = {
+  agent: { id: string; type?: string; description?: string; model?: string };
+  prompt?: string;
+  activity: SubagentActivity[];
+  activityCount: number;
+};
+
+/** A task longer than this many lines, or characters, starts clamped behind "Show more". */
+const PROMPT_CLAMP_LINES = 6;
+const PROMPT_CLAMP_CHARS = 600;
 
 type SubagentPanelProps = {
   /** Raw tool input of the call that spawned the agent, used for the prompt. */
@@ -83,16 +99,18 @@ export const SubagentPanel = memo(({
   createDiff,
   selectedProject,
 }: SubagentPanelProps) => {
+  const { t } = useTranslation();
   // Collapsed by default: an agent is a summary of work, and its detail is
   // only wanted on demand.
   const isExporting = useIsExportingTranscript();
   const [isOpen, setIsOpen] = useState(false);
+  // Whether a long task is shown in full; it starts clamped so the timeline stays in view.
+  const [isPromptExpanded, setIsPromptExpanded] = useState(false);
   const showTimeline = isOpen || isExporting;
+  const sessionId = useTranscriptSessionId();
 
   const parsedInput = useMemo(() => parseToolInput(toolInput), [toolInput]);
   const resultText = useMemo(() => readResultText(toolResult?.content), [toolResult?.content]);
-
-  const entries = activity ?? [];
   // A background agent's tool result is only its launch acknowledgement — the
   // real answer arrives later as a task notification — so its arrival says
   // nothing about whether the agent finished. Treating it as an outcome marked
@@ -105,13 +123,41 @@ export const SubagentPanel = memo(({
   );
   const status = resolveBackgroundTaskStatus(subagent?.status, taskStatus?.status)
     ?? (toolResult && !isAsyncAgentLaunch ? 'completed' : 'running');
-  const toolCount = entries.filter((entry) => entry.kind === 'tool').length;
+
+  // While an open agent runs, its own transcript is re-read: the stream
+  // carries little of its work and history only on the next load. History's
+  // timeline stands for a finished agent.
+  const agentId = subagent?.id ?? (toolResult?.toolUseResult as { agentId?: unknown } | undefined)?.agentId;
+  const polled = useAgentTimelinePoll<SubagentActivityRead>(
+    isOpen && !isExporting && status === 'running' && sessionId && typeof agentId === 'string' && agentId
+      ? {
+          key: `${sessionId}/${agentId}`,
+          read: async () => (await readApiJson<{ data: SubagentActivityRead }>(
+            await api.subagentActivity(sessionId, agentId),
+          )).data,
+          keepPolling: true,
+        }
+      : null,
+  );
+  // Live rows, history and the transcript can each be ahead of the others;
+  // the longest timeline is the freshest.
+  const polledActivity = polled && 'data' in polled ? polled.data : null;
+  const entries = polledActivity && polledActivity.activity.length > (activity?.length ?? 0)
+    ? polledActivity.activity
+    : activity ?? [];
+  const activityCount = polledActivity?.activityCount ?? subagent?.activityCount;
+
+  const toolEntries = entries.filter((entry) => entry.kind === 'tool');
+  const toolCount = toolEntries.length;
+  // What a running agent is on, for a glance at the closed card.
+  const lastToolName = status === 'running' ? toolEntries[toolEntries.length - 1]?.toolName : undefined;
   // Claude names its agent presets (Explore, Plan); Codex has none, so the
   // neutral label carries and the assigned nickname shows alongside it.
   const label = subagent?.type ?? String(parsedInput.subagent_type ?? '');
   const nickname = subagent?.name && subagent.name !== subagent.type ? subagent.name : '';
   const description = subagent?.description ?? String(parsedInput.description ?? '');
   const prompt = String(parsedInput.prompt ?? '');
+  const isLongPrompt = prompt.split('\n').length > PROMPT_CLAMP_LINES || prompt.length > PROMPT_CLAMP_CHARS;
 
   return (
     <div className="my-1 border-l-2 border-l-purple-500 py-0.5 pl-3 dark:border-l-purple-400">
@@ -138,6 +184,7 @@ export const SubagentPanel = memo(({
             <>
               <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-purple-500 dark:bg-purple-400" />
               running
+              {lastToolName && <span className="max-w-32 truncate text-muted-foreground">· {lastToolName}</span>}
             </>
           ) : status === 'failed' ? (
             <>
@@ -169,13 +216,33 @@ export const SubagentPanel = memo(({
           {prompt && (
             <div className="rounded border border-border/40 bg-muted/40 p-2 text-xs text-muted-foreground">
               <div className="mb-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">Task</div>
-              <div className="line-clamp-6 whitespace-pre-wrap break-words">{prompt}</div>
+              <div className={cn('whitespace-pre-wrap break-words', isLongPrompt && !isPromptExpanded && !isExporting && 'line-clamp-6')}>
+                {prompt}
+              </div>
+              {isLongPrompt && !isExporting && (
+                <button
+                  type="button"
+                  onClick={() => setIsPromptExpanded((previous) => !previous)}
+                  className="mt-1 text-[11px] text-purple-600 hover:underline dark:text-purple-300"
+                >
+                  {isPromptExpanded ? t('subagent.showLess', 'Show less') : t('subagent.showMore', 'Show more')}
+                </button>
+              )}
+            </div>
+          )}
+
+          {taskStatus?.usage && (
+            <div className="text-[11px] text-muted-foreground/70">
+              {t('workflow.usage', '{{toolUses}} tool uses · {{elapsed}}', {
+                toolUses: taskStatus.usage.toolUses,
+                elapsed: formatTaskDuration(taskStatus.usage.durationMs),
+              })}
             </div>
           )}
 
           <SubagentTimeline
             activity={entries}
-            activityCount={subagent?.activityCount}
+            activityCount={activityCount}
             onFileOpen={onFileOpen}
             createDiff={createDiff}
             selectedProject={selectedProject}

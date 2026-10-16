@@ -354,6 +354,10 @@
     "closeLoginModal": "Close login modal",
     "pluginLoadFailed": "Plugin failed to load: {{error}}"
   },
+  "subagent": {
+    "showMore": "Show more",
+    "showLess": "Show less"
+  },
   "workflow": {
     "title": "Workflow",
     "status": {

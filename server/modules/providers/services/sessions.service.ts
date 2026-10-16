@@ -14,6 +14,7 @@ import type {
   LLMProvider,
   NormalizedMessage,
   WorkflowAgentActivity,
+  SubagentActivityRead,
 } from '@/shared/types.js';
 import { AppError, sliceTailPage } from '@/shared/utils.js';
 
@@ -582,6 +583,32 @@ export const sessionsService = {
     if (!activity) {
       throw new AppError(`Workflow agent "${agentId}" was not found.`, {
         code: 'WORKFLOW_AGENT_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    return activity;
+  },
+
+  /**
+   * Reads what one subagent of a session was asked and has done so far, from
+   * the transcript it writes for itself. A background agent's card polls this
+   * while the agent runs: nothing else shows its progress until it reports.
+   */
+  async readSubagentActivity(sessionId: string, agentId: string): Promise<SubagentActivityRead> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const sessions = providerRegistry.resolveProvider(session.provider as LLMProvider).sessions;
+    const activity = await sessions.readSubagentActivity?.(sessionId, agentId);
+    if (!activity) {
+      throw new AppError(`Subagent "${agentId}" was not found.`, {
+        code: 'SUBAGENT_NOT_FOUND',
         statusCode: 404,
       });
     }

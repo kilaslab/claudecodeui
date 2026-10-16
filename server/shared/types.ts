@@ -503,6 +503,30 @@ export type WorkflowAgentActivity = {
 };
 
 /**
+ * One subagent of a session (an `Agent`/`Task` call), read from its own
+ * transcript on demand. A background agent's card polls this while the agent
+ * runs, because that transcript is the only place its progress lands before
+ * it reports back.
+ *
+ * Carries no status: the card already knows it from history and the live
+ * task events, and the transcript alone cannot tell a finished agent from
+ * one whose process died. `prompt` is the task the agent was given — its
+ * transcript's first user row. `activity` is capped for transport like
+ * `subagentTools`; `activityCount` is the full length.
+ */
+export type SubagentActivityRead = {
+  agent: {
+    id: string;
+    type?: string;
+    description?: string;
+    model?: string;
+  };
+  prompt?: string;
+  activity: SubagentActivity[];
+  activityCount: number;
+};
+
+/**
  * One agent a workflow run spawned, as its journal records it.
  *
  * `label` and `phase` are whatever the script passed when it spawned the

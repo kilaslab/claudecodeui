@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, CircleAlert, CircleCheck, CircleDashed, Workflow } from 'lucide-react';
 
@@ -20,6 +20,7 @@ import { SubagentTimeline } from '@/modules/chat/tools/SubagentTimeline';
 import { ToolErrorDisplay } from '@/modules/chat/tools/ToolErrorDisplay';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { useTranscriptSessionId } from '@/modules/chat/context/TranscriptSessionContext';
+import { useAgentTimelinePoll } from '@/modules/chat/hooks/useAgentTimelinePoll';
 import {
   describeWorkflowAgent,
   findCurrentWorkflowAgent,
@@ -60,9 +61,6 @@ type WorkflowAgentRow = Omit<WorkflowAgentProgress, 'state'> & {
   phase?: string;
   status: BackgroundTaskStatus | 'queued';
 };
-
-/** How often an open, running agent's timeline is re-read from its transcript. */
-const AGENT_TIMELINE_POLL_MS = 3_000;
 
 /** The text of a launch acknowledgement, which is never the run's result. */
 const LAUNCH_ACK_PREFIX = 'Workflow launched in background';
@@ -211,49 +209,15 @@ type WorkflowAgentTimelineProps = {
  */
 const WorkflowAgentTimeline = memo(({ sessionId, runId, agentId, isRunning, onFileOpen, createDiff, selectedProject }: WorkflowAgentTimelineProps) => {
   const { t } = useTranslation();
-  // What the last read returned — the timeline, or why there is none — and
-  // null until the first read lands. A later read that fails keeps the last
-  // timeline: what the agent had done does not stop being true.
-  const [loaded, setLoaded] = useState<{ activity: WorkflowAgentActivity } | { error: string } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let nextRead: ReturnType<typeof setTimeout> | undefined;
-
-    const read = async () => {
-      let settled = false;
-      try {
-        const payload = await readApiJson<{ data: WorkflowAgentActivity }>(
-          await api.workflowAgentActivity(sessionId, runId, agentId),
-        );
-        if (cancelled) {
-          return;
-        }
-        setLoaded({ activity: payload.data });
-        // The transcript's own status can settle the agent before the card
-        // hears of it.
-        settled = payload.data.agent.status !== 'running';
-      } catch (error) {
-        if (cancelled) {
-          return;
-        }
-        // The transcript is written a moment after the agent's start is
-        // reported, so the first read of a fresh agent can miss it.
-        setLoaded((previous) => previous && 'activity' in previous
-          ? previous
-          : { error: error instanceof Error ? error.message : String(error) });
-      }
-      if (isRunning && !settled) {
-        nextRead = setTimeout(read, AGENT_TIMELINE_POLL_MS);
-      }
-    };
-    void read();
-
-    return () => {
-      cancelled = true;
-      clearTimeout(nextRead);
-    };
-  }, [sessionId, runId, agentId, isRunning]);
+  const loaded = useAgentTimelinePoll<WorkflowAgentActivity>({
+    key: `${sessionId}/${runId}/${agentId}`,
+    read: async () => (await readApiJson<{ data: WorkflowAgentActivity }>(
+      await api.workflowAgentActivity(sessionId, runId, agentId),
+    )).data,
+    keepPolling: isRunning,
+    // The transcript's own status can settle the agent before the card hears of it.
+    isSettled: (activity) => activity.agent.status !== 'running',
+  });
 
   if (!loaded) {
     return <div className="text-[11px] text-muted-foreground/60">{t('workflow.agentTimelineLoading', 'Reading the agent\'s steps…')}</div>;
@@ -265,13 +229,13 @@ const WorkflowAgentTimeline = memo(({ sessionId, runId, agentId, isRunning, onFi
       </div>
     );
   }
-  if (loaded.activity.activity.length === 0) {
+  if (loaded.data.activity.length === 0) {
     return <div className="text-[11px] text-muted-foreground/60">{t('workflow.agentTimelineEmpty', 'Nothing recorded yet')}</div>;
   }
   return (
     <SubagentTimeline
-      activity={loaded.activity.activity}
-      activityCount={loaded.activity.activityCount}
+      activity={loaded.data.activity}
+      activityCount={loaded.data.activityCount}
       onFileOpen={onFileOpen}
       createDiff={createDiff}
       selectedProject={selectedProject}
