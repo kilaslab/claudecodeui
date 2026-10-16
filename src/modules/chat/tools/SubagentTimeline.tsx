@@ -1,4 +1,5 @@
-import { memo, useState } from 'react';
+import { Fragment, memo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Brain, MessageSquareText } from 'lucide-react';
 
 import type { DiffLine, Project, SubagentActivity } from '@/shared/types';
@@ -13,7 +14,18 @@ type SubagentTimelineProps = {
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   createDiff: (oldStr: string, newStr: string) => DiffLine[];
   selectedProject?: Project | null;
+  /** Opens an agent this run spawned; when absent, such calls draw as plain tool calls. */
+  onInspectAgent?: (agentId: string, title: string) => void;
 };
+
+/** What a spawned agent is called: the description its call gave it, else its preset. */
+function describeSpawnedAgent(toolInput: unknown): string {
+  const input = (toolInput && typeof toolInput === 'object' ? toolInput : {}) as { description?: unknown; subagent_type?: unknown };
+  if (typeof input.description === 'string' && input.description) {
+    return input.description;
+  }
+  return typeof input.subagent_type === 'string' && input.subagent_type ? input.subagent_type : 'Agent';
+}
 
 /**
  * How many timeline entries are drawn before the "show more" step. A single
@@ -52,7 +64,8 @@ SubagentNote.displayName = 'SubagentNote';
  * Only mount it while its panel is open: a run of a hundred tools is a
  * hundred tool renderers.
  */
-export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, createDiff, selectedProject }: SubagentTimelineProps) => {
+export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, createDiff, selectedProject, onInspectAgent }: SubagentTimelineProps) => {
+  const { t } = useTranslation();
   const isExporting = useIsExportingTranscript();
   // Raised by the "show more" step so a long run can be inspected in full
   // without paying for it up front.
@@ -71,20 +84,35 @@ export const SubagentTimeline = memo(({ activity, activityCount, onFileOpen, cre
         <div className="border-l border-border/60 pl-2">
           {visibleEntries.map((entry, index) => (
             entry.kind === 'tool' ? (
-              // Rendered through the same router the main thread uses, so a
-              // subagent's shell command or diff looks exactly like one the
-              // top-level agent ran.
-              <ToolRenderer
-                key={entry.toolId ?? `activity-${index}`}
-                toolName={entry.toolName || 'UnknownTool'}
-                toolInput={entry.toolInput}
-                toolResult={entry.toolResult}
-                toolId={entry.toolId}
-                mode="input"
-                onFileOpen={onFileOpen}
-                createDiff={createDiff}
-                selectedProject={selectedProject}
-              />
+              <Fragment key={entry.toolId ?? `activity-${index}`}>
+                {/* Rendered through the same router the main thread uses, so a
+                    subagent's shell command or diff looks exactly like one the
+                    top-level agent ran. */}
+                <ToolRenderer
+                  toolName={entry.toolName || 'UnknownTool'}
+                  toolInput={entry.toolInput}
+                  toolResult={entry.toolResult}
+                  toolId={entry.toolId}
+                  mode="input"
+                  onFileOpen={onFileOpen}
+                  createDiff={createDiff}
+                  selectedProject={selectedProject}
+                />
+                {entry.childAgentId && onInspectAgent && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (entry.childAgentId) {
+                        onInspectAgent(entry.childAgentId, describeSpawnedAgent(entry.toolInput));
+                      }
+                    }}
+                    aria-label={t('agentInspector.openAgentNamed', 'Open agent: {{title}}', { title: describeSpawnedAgent(entry.toolInput) })}
+                    className="mb-1 ml-5 text-[11px] text-purple-600 hover:underline dark:text-purple-300"
+                  >
+                    {t('agentInspector.openAgent', 'Open agent')}
+                  </button>
+                )}
+              </Fragment>
             ) : (
               <SubagentNote key={`activity-${index}`} activity={entry} />
             )

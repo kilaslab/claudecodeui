@@ -10,6 +10,7 @@ import { providerSkillsService } from '@/modules/providers/services/skills.servi
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
+  AgentActivityDetail,
   CustomProviderModelEffort,
   CustomProviderModelInput,
   LLMProvider,
@@ -57,10 +58,10 @@ const parseSessionId = (value: unknown): string => {
 
 /** A workflow run id as the harness mints one (`wf_16fbf852-274`). */
 const WORKFLOW_RUN_ID_PATTERN = /^wf_[A-Za-z0-9-]+$/;
-/** A workflow agent id as the CLI mints one: `a` and sixteen hex digits. */
-const WORKFLOW_AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/;
+/** An agent id as the CLI mints one, for a workflow's agents and a session's subagents alike: `a` and sixteen hex digits. */
+const AGENT_ID_PATTERN = /^a[0-9a-f]{16}$/;
 
-// Both ids name a file under the session's transcript directory, so nothing
+// These ids name a file under the session's transcript directory, so nothing
 // outside these shapes may reach the filesystem.
 const parseWorkflowRunId = (value: unknown): string => {
   const runId = readPathParam(value, 'runId');
@@ -75,9 +76,24 @@ const parseWorkflowRunId = (value: unknown): string => {
 
 const parseWorkflowAgentId = (value: unknown): string => {
   const agentId = readPathParam(value, 'agentId');
-  if (!WORKFLOW_AGENT_ID_PATTERN.test(agentId)) {
+  if (!AGENT_ID_PATTERN.test(agentId)) {
     throw new AppError('Invalid workflow agent id.', {
       code: 'INVALID_WORKFLOW_AGENT_ID',
+      statusCode: 400,
+    });
+  }
+  return agentId;
+};
+
+/** `?detail=full` is the agent inspector's read; anything else is a card's preview. */
+const parseAgentActivityDetail = (value: unknown): AgentActivityDetail =>
+  value === 'full' ? 'full' : 'preview';
+
+const parseSubagentId = (value: unknown): string => {
+  const agentId = readPathParam(value, 'agentId');
+  if (!AGENT_ID_PATTERN.test(agentId)) {
+    throw new AppError('Invalid agent id.', {
+      code: 'INVALID_AGENT_ID',
       statusCode: 400,
     });
   }
@@ -998,7 +1014,31 @@ router.get(
     const sessionId = parseSessionId(req.params.sessionId);
     const runId = parseWorkflowRunId(req.params.runId);
     const agentId = parseWorkflowAgentId(req.params.agentId);
-    const result = await sessionsService.readWorkflowAgentActivity(sessionId, runId, agentId);
+    const result = await sessionsService.readWorkflowAgentActivity(
+      sessionId,
+      runId,
+      agentId,
+      parseAgentActivityDetail(req.query.detail),
+    );
+    res.json(createApiSuccessResponse(result));
+  }),
+);
+
+/**
+ * One subagent's task and timeline, read on demand by its card: polled while
+ * a background agent runs, since its transcript is the only place its
+ * progress lands until it reports back.
+ */
+router.get(
+  '/sessions/:sessionId/agents/:agentId',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const agentId = parseSubagentId(req.params.agentId);
+    const result = await sessionsService.readSubagentActivity(
+      sessionId,
+      agentId,
+      parseAgentActivityDetail(req.query.detail),
+    );
     res.json(createApiSuccessResponse(result));
   }),
 );

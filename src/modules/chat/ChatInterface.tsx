@@ -8,6 +8,7 @@ import { useWebSocket } from '@/shared/context/WebSocketContext';
 import PermissionContext from '@/modules/chat/context/PermissionContext';
 import { MarkdownWorkspaceContext } from '@/modules/chat/context/MarkdownWorkspaceContext';
 import { TranscriptSessionContext } from '@/modules/chat/context/TranscriptSessionContext';
+import { AgentInspectorProvider } from '@/modules/chat/context/AgentInspectorProvider';
 import { api } from '@/shared/api';
 import type {
   ChatMessage,
@@ -482,62 +483,64 @@ function ChatInterface({
       <div className="flex h-full min-h-0 flex-col">
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
-            <ChatMessagesPane
-              scrollContainerRef={scrollContainerRef}
-              // Not redundant with the `scroll` listener. A first page is 20 rows,
-              // tool results fold into their calls, and the "load earlier" link is
-              // hidden while more pages exist — so a short transcript is often not
-              // scrollable at all and never emits `scroll`. Wheel and touch are
-              // then the only way to reach the top pager or the "load all" overlay.
-              onWheel={handleScroll}
-              onTouchMove={handleScroll}
-              isLoadingSessionMessages={isLoadingSessionMessages}
-              isProcessing={isProcessing}
-              hasActivityIndicator={hasActivityIndicator}
-              chatMessages={chatMessages}
-              selectedSession={selectedSession}
-              currentSessionId={currentSessionId}
-              provider={provider}
-              setProvider={setProvider}
-              textareaRef={textareaRef}
-              providerModels={providerModels}
-              setProviderModel={setStoredProviderModel}
-              providerModelCatalog={providerModelCatalog}
-              providerModelActions={providerModelActions}
-              providerModelsLoading={providerModelsLoading}
-              tasksEnabled={tasksEnabled}
-              isTaskMasterInstalled={isTaskMasterInstalled}
-              onShowAllTasks={onShowAllTasks}
-              setInput={setInput}
-              isLoadingMoreMessages={isLoadingMoreMessages}
-              hasMoreMessages={hasMoreMessages}
-              totalMessages={totalMessages}
-              sessionMessagesCount={chatMessages.length}
-              visibleMessageCount={visibleMessageCount}
-              visibleMessages={visibleMessages}
-              loadEarlierMessages={loadEarlierMessages}
-              revealMessage={revealMessage}
-              backgroundTasks={sessionActivity?.tasks}
-              sendMessage={sendMessage}
-              loadAllMessages={loadAllMessages}
-              allMessagesLoaded={allMessagesLoaded}
-              isLoadingAllMessages={isLoadingAllMessages}
-              loadAllJustFinished={loadAllJustFinished}
-              showLoadAllOverlay={showLoadAllOverlay}
-              createDiff={createDiff}
-              onFileOpen={onFileOpen}
-              onShowSettings={onShowSettings}
-              onGrantToolPermission={handleGrantToolPermission}
-              showRawParameters={showRawParameters}
-              showThinking={showThinking}
-              selectedProject={selectedProject}
-              // Editing replaces the turn and everything after it, so it is only
-              // offered when the session is idle — a half-truncated transcript with
-              // a live stream writing into it is not recoverable.
-              onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
-              onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
-              onLoadFullTranscript={loadFullTranscript}
-            />
+            <AgentInspectorProvider createDiff={createDiff} onFileOpen={onFileOpen} selectedProject={selectedProject}>
+              <ChatMessagesPane
+                scrollContainerRef={scrollContainerRef}
+                // Not redundant with the `scroll` listener. A first page is 20 rows,
+                // tool results fold into their calls, and the "load earlier" link is
+                // hidden while more pages exist — so a short transcript is often not
+                // scrollable at all and never emits `scroll`. Wheel and touch are
+                // then the only way to reach the top pager or the "load all" overlay.
+                onWheel={handleScroll}
+                onTouchMove={handleScroll}
+                isLoadingSessionMessages={isLoadingSessionMessages}
+                isProcessing={isProcessing}
+                hasActivityIndicator={hasActivityIndicator}
+                chatMessages={chatMessages}
+                selectedSession={selectedSession}
+                currentSessionId={currentSessionId}
+                provider={provider}
+                setProvider={setProvider}
+                textareaRef={textareaRef}
+                providerModels={providerModels}
+                setProviderModel={setStoredProviderModel}
+                providerModelCatalog={providerModelCatalog}
+                providerModelActions={providerModelActions}
+                providerModelsLoading={providerModelsLoading}
+                tasksEnabled={tasksEnabled}
+                isTaskMasterInstalled={isTaskMasterInstalled}
+                onShowAllTasks={onShowAllTasks}
+                setInput={setInput}
+                isLoadingMoreMessages={isLoadingMoreMessages}
+                hasMoreMessages={hasMoreMessages}
+                totalMessages={totalMessages}
+                sessionMessagesCount={chatMessages.length}
+                visibleMessageCount={visibleMessageCount}
+                visibleMessages={visibleMessages}
+                loadEarlierMessages={loadEarlierMessages}
+                revealMessage={revealMessage}
+                backgroundTasks={sessionActivity?.tasks}
+                sendMessage={sendMessage}
+                loadAllMessages={loadAllMessages}
+                allMessagesLoaded={allMessagesLoaded}
+                isLoadingAllMessages={isLoadingAllMessages}
+                loadAllJustFinished={loadAllJustFinished}
+                showLoadAllOverlay={showLoadAllOverlay}
+                createDiff={createDiff}
+                onFileOpen={onFileOpen}
+                onShowSettings={onShowSettings}
+                onGrantToolPermission={handleGrantToolPermission}
+                showRawParameters={showRawParameters}
+                showThinking={showThinking}
+                selectedProject={selectedProject}
+                // Editing replaces the turn and everything after it, so it is only
+                // offered when the session is idle — a half-truncated transcript with
+                // a live stream writing into it is not recoverable.
+                onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
+                onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
+                onLoadFullTranscript={loadFullTranscript}
+              />
+            </AgentInspectorProvider>
           </TranscriptSessionContext.Provider>
         </MarkdownWorkspaceContext.Provider>
 

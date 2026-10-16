@@ -354,6 +354,21 @@
     "closeLoginModal": "Close login modal",
     "pluginLoadFailed": "Plugin failed to load: {{error}}"
   },
+  "subagent": {
+    "showMore": "Show more",
+    "showLess": "Show less"
+  },
+  "agentInspector": {
+    "inspect": "Inspect agent",
+    "dialog": "Agent: {{title}}",
+    "breadcrumb": "Agents",
+    "close": "Close",
+    "task": "Task",
+    "steps": "Steps",
+    "result": "Result",
+    "openAgent": "Open agent",
+    "openAgentNamed": "Open agent: {{title}}"
+  },
   "workflow": {
     "title": "Workflow",
     "status": {

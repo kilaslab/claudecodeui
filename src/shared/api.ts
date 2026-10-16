@@ -289,8 +289,12 @@ export const api = {
     put(`/api/providers/sessions/${sessionId}`, { summary }),
   // What one agent of a workflow run did, read from its transcript on demand
   // when its row in the workflow card is opened.
-  workflowAgentActivity: (sessionId: string, runId: string, agentId: string) =>
-    get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/workflows/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}`),
+  // `detail: 'full'` is the agent inspector's read: many more steps, each nearly whole.
+  workflowAgentActivity: (sessionId: string, runId: string, agentId: string, detail?: 'full') =>
+    get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/workflows/${encodeURIComponent(runId)}/agents/${encodeURIComponent(agentId)}${detail ? query({ detail }) : ''}`),
+  // One subagent's task and timeline, read from its own transcript while its card or the inspector is open.
+  subagentActivity: (sessionId: string, agentId: string, detail?: 'full') =>
+    get(`/api/providers/sessions/${encodeURIComponent(sessionId)}/agents/${encodeURIComponent(agentId)}${detail ? query({ detail }) : ''}`),
 
   // Scheduled messages: send a message to a session at a future time.
   scheduledMessages: {

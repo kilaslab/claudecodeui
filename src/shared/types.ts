@@ -327,6 +327,27 @@ export type SubagentActivity = {
   toolInput?: unknown;
   toolResult?: ToolResult | null;
   content?: string;
+  /** The agent this tool call spawned (an `Agent`/`Task` call inside an agent's run), which the agent inspector opens in turn. */
+  childAgentId?: string;
+};
+
+/**
+ * One agent the agent inspector can open: a session's own subagent, or one
+ * agent of a workflow run when `runId` is set. Built by the cards that open
+ * the inspector (SubagentPanel, WorkflowPanel) and by the inspector itself for
+ * the agents an inspected run spawned.
+ */
+export type AgentInspectorTarget = {
+  sessionId: string;
+  agentId: string;
+  /** The workflow run the agent belongs to; absent for a session's own subagent. */
+  runId?: string;
+  /** What the breadcrumb and the dialog call the agent. */
+  title: string;
+  /** Whether the agent was running when it was opened, which keeps the inspector re-reading its run. */
+  isRunning: boolean;
+  /** What the agent returned, when the card that opened it already knows. */
+  result?: string;
 };
 
 /** Identity and lifecycle of one spawned subagent as the backend reports it; present on the tool call that spawned the agent and used to draw its container header. */

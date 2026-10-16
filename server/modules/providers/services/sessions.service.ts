@@ -14,6 +14,8 @@ import type {
   LLMProvider,
   NormalizedMessage,
   WorkflowAgentActivity,
+  SubagentActivityRead,
+  AgentActivityDetail,
 } from '@/shared/types.js';
 import { AppError, sliceTailPage } from '@/shared/utils.js';
 
@@ -574,7 +576,12 @@ export const sessionsService = {
    * that left no transcript for this agent: either way there is nothing to
    * show, and the card says so in one line.
    */
-  async readWorkflowAgentActivity(sessionId: string, runId: string, agentId: string): Promise<WorkflowAgentActivity> {
+  async readWorkflowAgentActivity(
+    sessionId: string,
+    runId: string,
+    agentId: string,
+    detail: AgentActivityDetail = 'preview',
+  ): Promise<WorkflowAgentActivity> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
@@ -584,10 +591,40 @@ export const sessionsService = {
     }
 
     const sessions = providerRegistry.resolveProvider(session.provider as LLMProvider).sessions;
-    const activity = await sessions.readWorkflowAgentActivity?.(sessionId, runId, agentId);
+    const activity = await sessions.readWorkflowAgentActivity?.(sessionId, runId, agentId, detail);
     if (!activity) {
       throw new AppError(`Workflow agent "${agentId}" was not found.`, {
         code: 'WORKFLOW_AGENT_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    return activity;
+  },
+
+  /**
+   * Reads what one subagent of a session was asked and has done so far, from
+   * the transcript it writes for itself. A background agent's card polls this
+   * while the agent runs: nothing else shows its progress until it reports.
+   */
+  async readSubagentActivity(
+    sessionId: string,
+    agentId: string,
+    detail: AgentActivityDetail = 'preview',
+  ): Promise<SubagentActivityRead> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const sessions = providerRegistry.resolveProvider(session.provider as LLMProvider).sessions;
+    const activity = await sessions.readSubagentActivity?.(sessionId, agentId, detail);
+    if (!activity) {
+      throw new AppError(`Subagent "${agentId}" was not found.`, {
+        code: 'SUBAGENT_NOT_FOUND',
         statusCode: 404,
       });
     }

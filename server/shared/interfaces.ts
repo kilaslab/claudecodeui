@@ -19,6 +19,8 @@ import type {
   ProviderRuntimeWriter,
   UpsertProviderMcpServerInput,
   WorkflowAgentActivity,
+  SubagentActivityRead,
+  AgentActivityDetail,
 } from '@/shared/types.js';
 
 //----------------- PROVIDER CONTRACT INTERFACES ------------
@@ -270,7 +272,22 @@ export interface IProviderSessions {
     sessionId: string,
     runId: string,
     agentId: string,
+    detail?: AgentActivityDetail,
   ): Promise<WorkflowAgentActivity | null>;
+
+  /**
+   * Reads what one subagent of the session was asked and has done so far, from
+   * the transcript it writes for itself. Returns `null` when the session has
+   * no transcript for that agent.
+   *
+   * Implemented only by providers that keep a transcript per subagent; its
+   * absence is what keeps an agent's card on the timeline history gave it.
+   */
+  readSubagentActivity?(
+    sessionId: string,
+    agentId: string,
+    detail?: AgentActivityDetail,
+  ): Promise<SubagentActivityRead | null>;
 }
 
 // ---------------------------
