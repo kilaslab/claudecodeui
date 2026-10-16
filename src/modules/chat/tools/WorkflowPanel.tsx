@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronRight, CircleAlert, CircleCheck, CircleDashed, Workflow } from 'lucide-react';
+import { ChevronRight, CircleAlert, CircleCheck, CircleDashed, Maximize2, Workflow } from 'lucide-react';
 
 import type {
   BackgroundTaskStatus,
@@ -21,6 +21,7 @@ import { ToolErrorDisplay } from '@/modules/chat/tools/ToolErrorDisplay';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { useTranscriptSessionId } from '@/modules/chat/context/TranscriptSessionContext';
 import { useAgentTimelinePoll } from '@/modules/chat/hooks/useAgentTimelinePoll';
+import { useAgentInspector } from '@/modules/chat/context/AgentInspectorContext';
 import {
   describeWorkflowAgent,
   findCurrentWorkflowAgent,
@@ -260,6 +261,8 @@ type WorkflowAgentRowProps = {
  */
 const WorkflowAgentRowView = memo(({ agent, timelineAddress, onFileOpen, createDiff, selectedProject }: WorkflowAgentRowProps) => {
   const { t } = useTranslation();
+  const inspector = useAgentInspector();
+  const inspectableAgentId = agent.agentId;
   // Opened on demand: the timeline is a fetch and, for a long run, a few
   // hundred tool renderers.
   const [isOpen, setIsOpen] = useState(false);
@@ -283,15 +286,34 @@ const WorkflowAgentRowView = memo(({ agent, timelineAddress, onFileOpen, createD
   return (
     <li>
       {canOpen ? (
-        <button
-          type="button"
-          aria-expanded={isOpen}
-          onClick={() => setIsOpen((previous) => !previous)}
-          className="flex w-full items-center gap-1.5 text-left hover:text-foreground"
-        >
-          <ChevronRight className={cn('h-3 w-3 flex-shrink-0 transition-transform duration-150', isOpen && 'rotate-90')} />
-          {summary}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-expanded={isOpen}
+            onClick={() => setIsOpen((previous) => !previous)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-left hover:text-foreground"
+          >
+            <ChevronRight className={cn('h-3 w-3 flex-shrink-0 transition-transform duration-150', isOpen && 'rotate-90')} />
+            {summary}
+          </button>
+          {inspector && timelineAddress && inspectableAgentId && (
+            <button
+              type="button"
+              onClick={() => inspector.inspectAgent({
+                sessionId: timelineAddress.sessionId,
+                runId: timelineAddress.runId,
+                agentId: inspectableAgentId,
+                title: describeWorkflowAgent(agent),
+                isRunning: agent.status === 'running',
+              })}
+              aria-label={t('agentInspector.inspect', 'Inspect agent')}
+              title={t('agentInspector.inspect', 'Inspect agent')}
+              className="flex-shrink-0 rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <Maximize2 className="h-3 w-3" />
+            </button>
+          )}
+        </div>
       ) : (
         <div className="flex items-center gap-1.5 pl-[18px]">{summary}</div>
       )}

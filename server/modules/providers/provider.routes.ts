@@ -10,6 +10,7 @@ import { providerSkillsService } from '@/modules/providers/services/skills.servi
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import type {
+  AgentActivityDetail,
   CustomProviderModelEffort,
   CustomProviderModelInput,
   LLMProvider,
@@ -83,6 +84,10 @@ const parseWorkflowAgentId = (value: unknown): string => {
   }
   return agentId;
 };
+
+/** `?detail=full` is the agent inspector's read; anything else is a card's preview. */
+const parseAgentActivityDetail = (value: unknown): AgentActivityDetail =>
+  value === 'full' ? 'full' : 'preview';
 
 const parseSubagentId = (value: unknown): string => {
   const agentId = readPathParam(value, 'agentId');
@@ -1009,7 +1014,12 @@ router.get(
     const sessionId = parseSessionId(req.params.sessionId);
     const runId = parseWorkflowRunId(req.params.runId);
     const agentId = parseWorkflowAgentId(req.params.agentId);
-    const result = await sessionsService.readWorkflowAgentActivity(sessionId, runId, agentId);
+    const result = await sessionsService.readWorkflowAgentActivity(
+      sessionId,
+      runId,
+      agentId,
+      parseAgentActivityDetail(req.query.detail),
+    );
     res.json(createApiSuccessResponse(result));
   }),
 );
@@ -1024,7 +1034,11 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
     const agentId = parseSubagentId(req.params.agentId);
-    const result = await sessionsService.readSubagentActivity(sessionId, agentId);
+    const result = await sessionsService.readSubagentActivity(
+      sessionId,
+      agentId,
+      parseAgentActivityDetail(req.query.detail),
+    );
     res.json(createApiSuccessResponse(result));
   }),
 );

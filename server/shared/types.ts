@@ -498,9 +498,21 @@ export type WorkflowAgentActivity = {
     model?: string;
     status: 'running' | 'completed' | 'failed' | 'stopped';
   };
+  /** What the script asked of the agent: its transcript's first user row. */
+  prompt?: string;
+  /** What the agent returned to the script, from the journal; absent until it has. */
+  result?: string;
   activity: SubagentActivity[];
   activityCount: number;
 };
+
+/**
+ * How much of an agent's run a read sends. `preview` is what a card shows —
+ * the newest steps, each cut to a few thousand characters, like a history
+ * timeline. `full` is what the agent inspector shows: many more steps, each
+ * nearly whole.
+ */
+export type AgentActivityDetail = 'preview' | 'full';
 
 /**
  * One subagent of a session (an `Agent`/`Task` call), read from its own
@@ -597,6 +609,8 @@ export type SubagentActivity = {
   toolResult?: { content?: string; isError?: boolean } | null;
   /** Message body; only set when `kind` is `text` or `thinking`. */
   content?: string;
+  /** The agent a tool call spawned (an `Agent`/`Task` call inside an agent's run), so it can be opened in turn. */
+  childAgentId?: string;
 };
 
 /**

@@ -584,3 +584,57 @@ test('the agent route reads what a session\'s subagent was asked and what it has
     assert.equal((await missing.json() as { error: { code: string } }).error.code, 'SUBAGENT_NOT_FOUND');
   });
 });
+
+const PARENT_AGENT_ID = 'a1111111111111111';
+const CHILD_AGENT_ID = 'a2222222222222222';
+
+test('the agent route reads a whole run for the inspector, and names the agents it spawned', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    const sessionPath = path.join(workspacePath, `${AGENT_SESSION_ID}.jsonl`);
+    await mkdir(workspacePath, { recursive: true });
+    await writeFile(sessionPath, `${JSON.stringify({ type: 'user', uuid: 'u1', sessionId: AGENT_SESSION_ID, timestamp: '2026-10-16T06:05:00.000Z', message: { role: 'user', content: 'review the repo' } })}\n`, 'utf8');
+    const subagentDir = path.join(workspacePath, AGENT_SESSION_ID, 'subagents');
+    await mkdir(subagentDir, { recursive: true });
+    const longReport = 'x'.repeat(6_000);
+    const rows = [
+      { isSidechain: true, agentId: PARENT_AGENT_ID, type: 'user', timestamp: '2026-10-16T06:05:01.000Z', message: { role: 'user', content: 'Review the repo with a helper.' } },
+      { isSidechain: true, agentId: PARENT_AGENT_ID, type: 'assistant', timestamp: '2026-10-16T06:05:02.000Z', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_child', name: 'Agent', input: { description: 'Read the tests', prompt: 'Read every test.' } }] } },
+      { isSidechain: true, agentId: PARENT_AGENT_ID, type: 'user', timestamp: '2026-10-16T06:05:03.000Z', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_child', content: 'Async agent launched successfully.' }] }, toolUseResult: { isAsync: true, status: 'async_launched', agentId: CHILD_AGENT_ID } },
+      { isSidechain: true, agentId: PARENT_AGENT_ID, type: 'assistant', timestamp: '2026-10-16T06:05:09.000Z', message: { role: 'assistant', content: [{ type: 'text', text: longReport }] } },
+    ];
+    await writeFile(path.join(subagentDir, `agent-${PARENT_AGENT_ID}.jsonl`), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`, 'utf8');
+    const now = new Date().toISOString();
+    sessionsDb.createSession(AGENT_SESSION_ID, 'claude', workspacePath, 'Agent session', now, now, sessionPath);
+
+    const read = async (query: string) => (await (await fetch(`${baseUrl}/api/providers/sessions/${AGENT_SESSION_ID}/agents/${PARENT_AGENT_ID}${query}`)).json() as { data: SubagentActivityRead }).data;
+
+    // The card's preview stays capped; the inspector asks for the whole run.
+    const preview = await read('');
+    assert.match(preview.activity[1]?.content ?? '', /… 2000 more characters$/);
+    const full = await read('?detail=full');
+    assert.equal(full.activity[1]?.content, longReport);
+
+    // The Agent call inside the run names the agent it spawned, which the
+    // inspector opens through this same route.
+    assert.equal(full.activity[0]?.toolName, 'Agent');
+    assert.equal(full.activity[0]?.childAgentId, CHILD_AGENT_ID);
+  });
+});
+
+test('the workflow agent route says what the script asked of an agent and what it returned', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    const sessionPath = await writeWorkflowRun(workspacePath);
+    const now = new Date().toISOString();
+    sessionsDb.createSession(WORKFLOW_SESSION_ID, 'claude', workspacePath, 'Workflow session', now, now, sessionPath);
+
+    const response = await fetch(`${baseUrl}/api/providers/sessions/${WORKFLOW_SESSION_ID}/workflows/${WORKFLOW_RUN_ID}/agents/${FINISHED_AGENT_ID}?detail=full`);
+    const activity = (await response.json() as { data: WorkflowAgentActivity }).data;
+
+    assert.equal(activity.prompt, 'You are the analysis step of a code-quality audit.');
+    assert.deepEqual(JSON.parse(activity.result ?? 'null'), { area: 'sidebar' });
+
+    // An agent the journal never settled has no result to show.
+    const unreported = (await (await fetch(`${baseUrl}/api/providers/sessions/${WORKFLOW_SESSION_ID}/workflows/${WORKFLOW_RUN_ID}/agents/${UNREPORTED_AGENT_ID}`)).json() as { data: WorkflowAgentActivity }).data;
+    assert.equal(unreported.result, undefined);
+  });
+});

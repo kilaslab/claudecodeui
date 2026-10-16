@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronRight, CircleAlert, CircleCheck, CircleDashed } from 'lucide-react';
+import { Bot, ChevronRight, CircleAlert, CircleCheck, CircleDashed, Maximize2 } from 'lucide-react';
 
 import type { DiffLine, LiveTaskStatus, Project, SubagentActivity, SubagentInfo, ToolResult } from '@/shared/types';
 import { api, readApiJson } from '@/shared/api';
@@ -8,6 +8,7 @@ import { cn } from '@/shared/utils';
 import { SubagentTimeline } from '@/modules/chat/tools/SubagentTimeline';
 import { useIsExportingTranscript } from '@/modules/chat/context/TranscriptRenderContext';
 import { useTranscriptSessionId } from '@/modules/chat/context/TranscriptSessionContext';
+import { useAgentInspector } from '@/modules/chat/context/AgentInspectorContext';
 import { useAgentTimelinePoll } from '@/modules/chat/hooks/useAgentTimelinePoll';
 import { MarkdownContent } from '@/modules/chat/tools/ContentRenderers/MarkdownContent';
 import { formatTaskDuration, resolveBackgroundTaskStatus } from '@/modules/chat/utils/backgroundTasks';
@@ -108,6 +109,7 @@ export const SubagentPanel = memo(({
   const [isPromptExpanded, setIsPromptExpanded] = useState(false);
   const showTimeline = isOpen || isExporting;
   const sessionId = useTranscriptSessionId();
+  const inspector = useAgentInspector();
 
   const parsedInput = useMemo(() => parseToolInput(toolInput), [toolInput]);
   const resultText = useMemo(() => readResultText(toolResult?.content), [toolResult?.content]);
@@ -161,51 +163,70 @@ export const SubagentPanel = memo(({
 
   return (
     <div className="my-1 border-l-2 border-l-purple-500 py-0.5 pl-3 dark:border-l-purple-400">
-      <button
-        type="button"
-        aria-expanded={isOpen}
-        onClick={() => setIsOpen((previous) => !previous)}
-        className="flex w-full select-none items-center gap-1.5 py-0.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ChevronRight className={cn('h-3 w-3 flex-shrink-0 transition-transform duration-150', isOpen && 'rotate-90')} />
-        <Bot className="h-3.5 w-3.5 flex-shrink-0 text-purple-500 dark:text-purple-400" />
-        <span className="flex-shrink-0 font-medium text-foreground">{label || 'Agent'}</span>
-        {description && (
-          <>
-            <span className="flex-shrink-0 text-[10px] text-muted-foreground/40">/</span>
-            <span className="min-w-0 flex-1 truncate">{description}</span>
-          </>
-        )}
-        {nickname && (
-          <span className="flex-shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground/70">{nickname}</span>
-        )}
-        <span className={cn('ml-auto flex flex-shrink-0 items-center gap-1 text-[11px]', STATUS_STYLES[status])}>
-          {status === 'running' ? (
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          aria-expanded={isOpen}
+          onClick={() => setIsOpen((previous) => !previous)}
+          className="flex min-w-0 flex-1 select-none items-center gap-1.5 py-0.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <ChevronRight className={cn('h-3 w-3 flex-shrink-0 transition-transform duration-150', isOpen && 'rotate-90')} />
+          <Bot className="h-3.5 w-3.5 flex-shrink-0 text-purple-500 dark:text-purple-400" />
+          <span className="flex-shrink-0 font-medium text-foreground">{label || 'Agent'}</span>
+          {description && (
             <>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-purple-500 dark:bg-purple-400" />
-              running
-              {lastToolName && <span className="max-w-32 truncate text-muted-foreground">· {lastToolName}</span>}
-            </>
-          ) : status === 'failed' ? (
-            <>
-              <CircleAlert className="h-3 w-3" />
-              failed
-            </>
-          ) : status === 'stopped' ? (
-            // Neither a spinner nor a check mark: the agent never reported and
-            // the process it ran in is gone, so there is no outcome to draw.
-            <span title="The run ended before this agent reported back" className="flex items-center gap-1">
-              <CircleDashed className="h-3 w-3" />
-              no result
-            </span>
-          ) : (
-            <>
-              <CircleCheck className="h-3 w-3" />
-              {toolCount > 0 ? `${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}` : 'done'}
+              <span className="flex-shrink-0 text-[10px] text-muted-foreground/40">/</span>
+              <span className="min-w-0 flex-1 truncate">{description}</span>
             </>
           )}
-        </span>
-      </button>
+          {nickname && (
+            <span className="flex-shrink-0 rounded bg-muted px-1 text-[10px] text-muted-foreground/70">{nickname}</span>
+          )}
+          <span className={cn('ml-auto flex flex-shrink-0 items-center gap-1 text-[11px]', STATUS_STYLES[status])}>
+            {status === 'running' ? (
+              <>
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-purple-500 dark:bg-purple-400" />
+                running
+                {lastToolName && <span className="max-w-32 truncate text-muted-foreground">· {lastToolName}</span>}
+              </>
+            ) : status === 'failed' ? (
+              <>
+                <CircleAlert className="h-3 w-3" />
+                failed
+              </>
+            ) : status === 'stopped' ? (
+              // Neither a spinner nor a check mark: the agent never reported and
+              // the process it ran in is gone, so there is no outcome to draw.
+              <span title="The run ended before this agent reported back" className="flex items-center gap-1">
+                <CircleDashed className="h-3 w-3" />
+                no result
+              </span>
+            ) : (
+              <>
+                <CircleCheck className="h-3 w-3" />
+                {toolCount > 0 ? `${toolCount} ${toolCount === 1 ? 'tool' : 'tools'}` : 'done'}
+              </>
+            )}
+          </span>
+        </button>
+        {inspector && sessionId && typeof agentId === 'string' && agentId && !isExporting && (
+          <button
+            type="button"
+            onClick={() => inspector.inspectAgent({
+              sessionId,
+              agentId,
+              title: description || label || 'Agent',
+              isRunning: status === 'running',
+              result: resultText || undefined,
+            })}
+            aria-label={t('agentInspector.inspect', 'Inspect agent')}
+            title={t('agentInspector.inspect', 'Inspect agent')}
+            className="flex-shrink-0 rounded p-0.5 text-muted-foreground/70 transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <Maximize2 className="h-3 w-3" />
+          </button>
+        )}
+      </div>
 
       {showTimeline && (
         <div className="mt-1.5 space-y-2 pl-[18px]">

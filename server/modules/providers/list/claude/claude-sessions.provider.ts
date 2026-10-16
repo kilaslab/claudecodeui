@@ -12,6 +12,7 @@ import type {
   NormalizedMessage,
   SubagentActivity,
   SubagentActivityRead,
+  AgentActivityDetail,
   SubagentInfo,
   TaskUsage,
   WorkflowAgentActivity,
@@ -29,6 +30,7 @@ import {
   sliceTailPage,
   stripAnsiSequences,
   truncateSubagentActivity,
+  truncateSubagentActivityTo,
 } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import { getClaudeSDKSessionStartTime } from '@/modules/providers/list/claude/claude-runtime.provider.js';
@@ -62,6 +64,37 @@ const formatDuration = (milliseconds: number): string => {
  * the card says how many earlier ones were left out.
  */
 const MAX_TRANSMITTED_SUBAGENT_ACTIVITIES = 200;
+
+/**
+ * What the agent inspector reads of one agent's run (`detail: 'full'`): far
+ * more steps than a card, each nearly whole. Still bounded, because one tool
+ * result can be megabytes of command output.
+ */
+const MAX_INSPECTED_SUBAGENT_ACTIVITIES = 2_000;
+const MAX_INSPECTED_ACTIVITY_CONTENT = 50_000;
+
+/** The part of an agent's timeline a read of `detail` sends, newest steps first kept. */
+function capSubagentActivity(activity: SubagentActivity[], detail: AgentActivityDetail): SubagentActivity[] {
+  return detail === 'full'
+    ? activity
+      .slice(-MAX_INSPECTED_SUBAGENT_ACTIVITIES)
+      .map((entry) => truncateSubagentActivityTo(entry, MAX_INSPECTED_ACTIVITY_CONTENT))
+    : activity
+      .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
+      .map(truncateSubagentActivity);
+}
+
+/** One body of an agent read (its task, its result), cut like its timeline's. */
+function capAgentText(value: string | undefined, detail: AgentActivityDetail): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const entry: SubagentActivity = { kind: 'text', content: value };
+  return (detail === 'full'
+    ? truncateSubagentActivityTo(entry, MAX_INSPECTED_ACTIVITY_CONTENT)
+    : truncateSubagentActivity(entry)
+  ).content;
+}
 
 type ClaudeToolResult = {
   content: unknown;
@@ -203,6 +236,13 @@ async function readClaudeSubagentTranscript(filePath: string): Promise<ClaudeSub
                   : JSON.stringify(part.content),
               isError: Boolean(part.is_error),
             };
+
+            // An Agent call inside the run is acknowledged with the id of the
+            // agent it spawned, whose own transcript sits beside this one.
+            const spawnedAgentId = readObjectRecord(entry.toolUseResult)?.agentId;
+            if ((tool.toolName === 'Agent' || tool.toolName === 'Task') && typeof spawnedAgentId === 'string' && spawnedAgentId) {
+              tool.childAgentId = spawnedAgentId;
+            }
           }
         }
       } catch {
@@ -266,6 +306,44 @@ async function findClaudeSubagentTranscript(
   return null;
 }
 
+/** The records of a workflow run's `journal.jsonl`, or none when the run left no journal. */
+async function readWorkflowJournalEntries(transcriptDir: string): Promise<AnyRecord[]> {
+  let journal: string;
+  try {
+    journal = await fsp.readFile(path.join(transcriptDir, 'journal.jsonl'), 'utf8');
+  } catch {
+    return [];
+  }
+
+  const entries: AnyRecord[] = [];
+  for (const line of journal.split('\n')) {
+    if (!line.trim()) {
+      continue;
+    }
+    try {
+      entries.push(JSON.parse(line) as AnyRecord);
+    } catch {
+      // The workflow appends while this reads, so the last line can be partial.
+    }
+  }
+  return entries;
+}
+
+/**
+ * What one workflow agent returned to the script, from its journal `result`
+ * record: text as it is, anything structured as indented JSON. Undefined for
+ * an agent the journal has not settled with a result.
+ */
+async function readWorkflowAgentResult(transcriptDir: string, agentId: string): Promise<string | undefined> {
+  const record = (await readWorkflowJournalEntries(transcriptDir))
+    .filter((entry) => entry.type === 'result' && entry.agentId === agentId)
+    .at(-1);
+  if (!record || record.result === undefined) {
+    return undefined;
+  }
+  return typeof record.result === 'string' ? record.result : JSON.stringify(record.result, null, 2);
+}
+
 /**
  * Reads which agents a workflow run spawned and how far each got.
  *
@@ -281,26 +359,7 @@ async function findClaudeSubagentTranscript(
 async function readWorkflowJournal(transcriptDir: string): Promise<WorkflowAgentInfo[]> {
   const agentsById = new Map<string, WorkflowAgentInfo>();
 
-  let journal: string;
-  try {
-    journal = await fsp.readFile(path.join(transcriptDir, 'journal.jsonl'), 'utf8');
-  } catch {
-    return [];
-  }
-
-  for (const line of journal.split('\n')) {
-    if (!line.trim()) {
-      continue;
-    }
-
-    let entry: AnyRecord;
-    try {
-      entry = JSON.parse(line) as AnyRecord;
-    } catch {
-      // The workflow appends while this reads, so the last line can be partial.
-      continue;
-    }
-
+  for (const entry of await readWorkflowJournalEntries(transcriptDir)) {
     const agentId = typeof entry.agentId === 'string' ? entry.agentId : '';
     if (!agentId) {
       continue;
@@ -1702,12 +1761,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
    * The journal beside it settles the agent when it has; short of that the
    * agent is running only while the process that spawned it is — the same
    * rule history applies to a launch row, keyed here on the agent's first row
-   * rather than the launch's.
+   * rather than the launch's. What the script asked of the agent comes from
+   * that first row, and what it returned from the journal.
    */
   async readWorkflowAgentActivity(
     sessionId: string,
     runId: string,
     agentId: string,
+    detail: AgentActivityDetail = 'preview',
   ): Promise<WorkflowAgentActivity | null> {
     const session = sessionsDb.getSessionById(sessionId);
     const jsonlPath = session?.jsonl_path;
@@ -1724,9 +1785,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return null;
     }
 
-    const [transcript, journalAgents] = await Promise.all([
+    const [transcript, journalAgents, result] = await Promise.all([
       readClaudeSubagentTranscript(transcriptPath),
       readWorkflowJournal(transcriptDir),
+      readWorkflowAgentResult(transcriptDir, agentId),
     ]);
     const journalAgent = journalAgents.find((agent) => agent.id === agentId);
 
@@ -1747,9 +1809,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         model: transcript.model,
         status,
       },
-      activity: transcript.activity
-        .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
-        .map(truncateSubagentActivity),
+      prompt: capAgentText(transcript.prompt, detail),
+      result: capAgentText(result, detail),
+      activity: capSubagentActivity(transcript.activity, detail),
       activityCount: transcript.activity.length,
     };
   }
@@ -1757,9 +1819,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
   /**
    * Reads one subagent's task and timeline from the transcript it writes for
    * itself under `<projectDir>/<providerSessionId>/subagents/`, the same file
-   * history attaches to its launch row, capped the same way.
+   * history attaches to its launch row — capped the same way for a card, far
+   * less for the inspector (`detail: 'full'`).
    */
-  async readSubagentActivity(sessionId: string, agentId: string): Promise<SubagentActivityRead | null> {
+  async readSubagentActivity(
+    sessionId: string,
+    agentId: string,
+    detail: AgentActivityDetail = 'preview',
+  ): Promise<SubagentActivityRead | null> {
     const session = sessionsDb.getSessionById(sessionId);
     const jsonlPath = session?.jsonl_path;
     const providerSessionId = session?.provider_session_id;
@@ -1783,10 +1850,8 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         description: meta.description,
         model: transcript.model,
       },
-      prompt: transcript.prompt,
-      activity: transcript.activity
-        .slice(-MAX_TRANSMITTED_SUBAGENT_ACTIVITIES)
-        .map(truncateSubagentActivity),
+      prompt: capAgentText(transcript.prompt, detail),
+      activity: capSubagentActivity(transcript.activity, detail),
       activityCount: transcript.activity.length,
     };
   }

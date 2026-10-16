@@ -20,6 +20,7 @@ import type {
   UpsertProviderMcpServerInput,
   WorkflowAgentActivity,
   SubagentActivityRead,
+  AgentActivityDetail,
 } from '@/shared/types.js';
 
 //----------------- PROVIDER CONTRACT INTERFACES ------------
@@ -245,6 +246,7 @@ export interface IProviderSessions {
     sessionId: string,
     runId: string,
     agentId: string,
+    detail?: AgentActivityDetail,
   ): Promise<WorkflowAgentActivity | null>;
 
   /**
@@ -255,7 +257,11 @@ export interface IProviderSessions {
    * Implemented only by providers that keep a transcript per subagent; its
    * absence is what keeps an agent's card on the timeline history gave it.
    */
-  readSubagentActivity?(sessionId: string, agentId: string): Promise<SubagentActivityRead | null>;
+  readSubagentActivity?(
+    sessionId: string,
+    agentId: string,
+    detail?: AgentActivityDetail,
+  ): Promise<SubagentActivityRead | null>;
 }
 
 // ---------------------------

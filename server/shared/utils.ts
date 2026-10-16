@@ -495,24 +495,36 @@ export function createCompleteMessage(opts: {
  */
 const MAX_SUBAGENT_ACTIVITY_CONTENT = 4000;
 
-function truncateForPreview(value: string | undefined): string | undefined {
-  if (typeof value !== 'string' || value.length <= MAX_SUBAGENT_ACTIVITY_CONTENT) {
+function truncateForPreview(value: string | undefined, maxContent: number): string | undefined {
+  if (typeof value !== 'string' || value.length <= maxContent) {
     return value;
   }
-  const omitted = value.length - MAX_SUBAGENT_ACTIVITY_CONTENT;
-  return `${value.slice(0, MAX_SUBAGENT_ACTIVITY_CONTENT)}\n… ${omitted} more characters`;
+  const omitted = value.length - maxContent;
+  return `${value.slice(0, maxContent)}\n… ${omitted} more characters`;
 }
 
 /**
  * Trims one subagent activity down to what its nested preview can show.
  *
  * Used by both provider session adapters so a Claude agent's timeline and a
- * Codex agent's timeline cost the same to transport.
+ * Codex agent's timeline cost the same to transport. Unary on purpose, so it
+ * can be passed straight to `Array.prototype.map`.
  */
 export function truncateSubagentActivity(activity: SubagentActivity): SubagentActivity {
-  const truncatedContent = truncateForPreview(activity.content);
+  return truncateSubagentActivityTo(activity, MAX_SUBAGENT_ACTIVITY_CONTENT);
+}
+
+/**
+ * Trims one subagent activity's bodies (its text and its tool result) to
+ * `maxContent` characters each, saying how much was left out.
+ *
+ * Used by the Claude session adapter for the agent inspector, which reads an
+ * agent's run with a far higher limit than a card's preview.
+ */
+export function truncateSubagentActivityTo(activity: SubagentActivity, maxContent: number): SubagentActivity {
+  const truncatedContent = truncateForPreview(activity.content, maxContent);
   const truncatedResult = activity.toolResult
-    ? { ...activity.toolResult, content: truncateForPreview(activity.toolResult.content) }
+    ? { ...activity.toolResult, content: truncateForPreview(activity.toolResult.content, maxContent) }
     : activity.toolResult;
 
   if (truncatedContent === activity.content && truncatedResult === activity.toolResult) {
