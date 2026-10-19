@@ -1379,6 +1379,33 @@ function createHeldPromptStream(messages) {
 }
 
 /**
+ * Outcome of a turn's `result` message. The SDK reports a failed turn either
+ * with an `error_*` subtype (error_max_turns, error_during_execution,
+ * error_max_budget_usd, ...) or with `is_error` on a `success` subtype (an API
+ * error the CLI gave up on). Either way the turn did not complete.
+ *
+ * Exported for the runtime tests.
+ * @param {Object} message - SDK `result` message
+ * @returns {{ failed: boolean, reason: string }} `reason` is human-readable
+ *   for a failed turn and `'completed'` otherwise
+ */
+export function resultOutcome(message) {
+  const subtype = typeof message?.subtype === 'string' ? message.subtype : 'success';
+  const failed = message?.is_error === true || subtype !== 'success';
+  if (!failed) {
+    return { failed: false, reason: 'completed' };
+  }
+  const details = Array.isArray(message?.errors)
+    ? message.errors.filter((item) => typeof item === 'string' && item)
+    : [];
+  const text = details.length > 0
+    ? details.join('; ')
+    : (typeof message?.result === 'string' ? message.result : '');
+  const kind = subtype === 'success' ? 'error' : subtype;
+  return { failed: true, reason: text ? `${kind}: ${text}` : kind };
+}
+
+/**
  * Executes a Claude query using the SDK
  * @param {string} command - User prompt/command
  * @param {Object} options - Query options
@@ -1423,6 +1450,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // for tools that emit none (Monitor, ScheduleWakeup, CronCreate, TaskCreate)
   // and for an SDK that does not report tasks at all.
   let sawTaskEventThisTurn = false;
+  // Set when this turn showed the client assistant text or an error, so an
+  // error `result` can tell whether its reason was already on screen.
+  let explanationSentThisTurn = false;
   // True while the process is being held open for background work, so a later
   // `result` can be recognised as that work reporting back.
   let heldForBackgroundWork = false;
@@ -1660,6 +1690,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (isSubagentPromptEcho(msg)) {
           continue;
         }
+        if (msg.kind === 'error' || msg.kind === 'stream_delta' || (msg.kind === 'text' && msg.role === 'assistant')) {
+          explanationSentThisTurn = true;
+        }
         ws.send(msg);
       }
 
@@ -1811,14 +1844,34 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         const stillOutstanding = backgroundWork.hasOutstanding(sessionKey());
         if (!turnCompleteSent && !abortPending && !steersPending) {
           turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
-          notifyRunStopped({
-            userId: ws?.userId || null,
-            provider: 'claude',
-            sessionId: sessionId || capturedSessionId || null,
-            sessionName: sessionSummary,
-            stopReason: 'completed'
-          });
+          // The terminal status follows the result: an error result ends the
+          // turn as failed instead of being reported as a success.
+          const outcome = resultOutcome(message);
+          if (outcome.failed && (message.subtype !== 'success' || !explanationSentThisTurn)) {
+            // An `error_*` subtype comes with no assistant text explaining it,
+            // so the chat would otherwise just stop. An `is_error` success
+            // result usually streams its error text as an assistant message
+            // first; repeat the reason only when the turn showed nothing.
+            ws.send(createNormalizedMessage({ kind: 'error', content: `Claude ended the turn with ${outcome.reason}`, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+          }
+          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: outcome.failed ? 1 : 0 }));
+          if (outcome.failed) {
+            notifyRunFailed({
+              userId: ws?.userId || null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary,
+              error: new Error(outcome.reason)
+            });
+          } else {
+            notifyRunStopped({
+              userId: ws?.userId || null,
+              provider: 'claude',
+              sessionId: sessionId || capturedSessionId || null,
+              sessionName: sessionSummary,
+              stopReason: 'completed'
+            });
+          }
           // Record on the live session entry that this turn is done, even
           // though the process may stay held open for background work below.
           // `steerClaudeSDKSession` checks this to refuse folding a message
@@ -1861,6 +1914,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           || (sawTaskEventThisTurn ? stillOutstanding : backgroundWorkPending || stillOutstanding);
         backgroundWorkPending = false;
         sawTaskEventThisTurn = false;
+        explanationSentThisTurn = false;
         if (holdForTurn) {
           heldForBackgroundWork = true;
           scheduleRelease();
