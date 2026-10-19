@@ -294,3 +294,72 @@ test('a provider without steer support (e.g. codex) queues a steer submit instea
   );
   assert.equal(readQueuedMessage(SESSION.id)?.content, 'hello', 'falls back to the ordinary queue instead');
 });
+
+/**
+ * Interrupting a queued draft while the session only has background work
+ * left asks through the same dialog a plain send does, before the draft is
+ * cleared: anything short of "Send anyway" leaves the draft queued.
+ */
+const backgroundOnly = new Map([[SESSION.id, {
+  statusText: null,
+  canInterrupt: false,
+  startedAt: 1,
+  background: true,
+  tasks: [{ taskId: 'a1', toolUseId: 'toolu_agent', taskType: 'local_agent', description: 'Survey the repo', startedAt: 1 }],
+}]]);
+
+type QueuedDraftProps = { isLoading: boolean; processingSessions?: typeof backgroundOnly };
+
+const renderWithQueuedDraft = async (sent: Array<{ type: string; content?: string }>) => {
+  const view = renderHook(
+    ({ isLoading, processingSessions }: QueuedDraftProps) =>
+      useChatComposerState(baseConfig({
+        isLoading,
+        processingSessions,
+        sendMessage: (message: unknown) => { sent.push(message as { type: string; content?: string }); },
+      }) as never),
+    { initialProps: { isLoading: true } as QueuedDraftProps },
+  );
+  await act(async () => { view.result.current.setInput('queued text'); });
+  await act(async () => {
+    await view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
+  });
+  assert.equal(readQueuedMessage(SESSION.id)?.content, 'queued text', 'sanity: the draft is queued');
+  // The turn ends; only the agent it launched is still running.
+  view.rerender({ isLoading: false, processingSessions: backgroundOnly });
+  return view;
+};
+
+test('interrupting a queued draft over background work asks first, and cancelling keeps the draft queued', async () => {
+  const sent: Array<{ type: string; content?: string }> = [];
+  const view = await renderWithQueuedDraft(sent);
+
+  let pending: Promise<void> | undefined;
+  act(() => { pending = view.result.current.sendQueuedDraft('interrupt'); });
+  assert.deepEqual(view.result.current.backgroundSendPrompt?.work, ['Agent Survey the repo']);
+
+  await act(async () => {
+    view.result.current.resolveBackgroundSendPrompt('cancel');
+    await pending;
+  });
+
+  assert.equal(sent.length, 0, 'nothing is sent');
+  assert.equal(readQueuedMessage(SESSION.id)?.content, 'queued text', 'the draft stays queued');
+  assert.equal(view.result.current.queuedDraft?.content, 'queued text');
+});
+
+test('sending a queued draft anyway over background work sends it and clears the queue', async () => {
+  const sent: Array<{ type: string; content?: string }> = [];
+  const view = await renderWithQueuedDraft(sent);
+
+  let pending: Promise<void> | undefined;
+  act(() => { pending = view.result.current.sendQueuedDraft('interrupt'); });
+  await act(async () => {
+    view.result.current.resolveBackgroundSendPrompt('send');
+    await pending;
+  });
+
+  await vi.waitFor(() => assert.equal(sent.filter((message) => message.type === 'chat.send').length, 1));
+  assert.equal(readQueuedMessage(SESSION.id), null, 'the queue is cleared once the draft is sent');
+  assert.equal(view.result.current.backgroundSendPrompt, null, 'the prompt was asked once, not again by the replay');
+});
