@@ -78,9 +78,12 @@ export function createCliApplication(): CliApplication {
       // Yield first so the default `start` command can begin loading the server
       // before this best-effort npm registry check runs.
       await new Promise<void>((resolve) => setImmediate(resolve));
+      // npm's own error output (offline, or a package not published yet) would
+      // land in the server log; the caller already treats a failure as
+      // "could not check".
       return execSync(
         `npm show ${npmInstallation.packageName} version`,
-        { encoding: 'utf8' },
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
       ).trim();
     },
     updateGlobalPackage: () => {
