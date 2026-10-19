@@ -1637,11 +1637,29 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         }
       }
 
+      // A resumed CLI first works through the task notifications left in the
+      // transcript, as a turn of their own that ends in a `result` stamped
+      // `origin: { kind: 'task-notification' }`, and only then reads this
+      // turn's prompt. Current CLIs (seen on 2.1.280) do this on the next
+      // message after a held run: the new process reports the old one's
+      // background shell as stopped ("didn't finish before the previous
+      // session ended"). That result is not this turn's end. Taken as one, it
+      // sent `complete` ahead of the reply and released stdin before the
+      // prompt had started anything, so background work the turn went on to
+      // launch was killed as soon as the turn ended. Once this turn has
+      // completed, a result with that origin is background work reporting
+      // back, which the `result` branch below owns.
+      const drainsEarlierNotification = message.type === 'result'
+        && !turnCompleteSent
+        && message.origin?.kind === 'task-notification';
+
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
       let tokenBudgetData = extractTokenBudget(message, reportedContextWindow)
-        || (assistantBudgetSent ? null : extractCumulativeTokenBudget(message, reportedContextWindow));
+        || (assistantBudgetSent || drainsEarlierNotification
+          ? null
+          : extractCumulativeTokenBudget(message, reportedContextWindow));
       if (
         !tokenBudgetData
         && turnContextWindow
@@ -1712,7 +1730,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         releasePromptStream();
       }
 
-      if (message.type === 'result') {
+      if (message.type === 'result' && !drainsEarlierNotification) {
         endHeldTurn(sessionKey(), queryInstance);
         // A `result` can itself carry the fold-confirmation uuid(s) (not
         // just the `assistant` frame that preceded it), so settle against
