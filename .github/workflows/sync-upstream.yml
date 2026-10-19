@@ -1,0 +1,177 @@
+name: Sync upstream
+
+# Keeps this fork next to siteboon/claudecodeui:
+# - `main` fast-forwards to upstream `main` (it is never committed to here);
+# - when upstream tags a release that `kilas` does not contain yet, a
+#   `sync/<tag>` branch merges it into `kilas`, the checks run on it, and a
+#   pull request into `kilas` is opened. A merge that conflicts opens an issue
+#   listing the files instead; resolve it locally (rerere remembers earlier
+#   resolutions) and push the branch yourself.
+#
+# package.json and package-lock.json always collide on the version line, so
+# the merge takes upstream's copies (their dependencies win) and re-applies the
+# fork's identity with scripts/fork/apply-package-identity.mjs.
+#
+# Tokens: GITHUB_TOKEN may not push commits that change .github/workflows, and
+# upstream commits sometimes do. Add a SYNC_TOKEN secret (a fine-grained token
+# for this repository with Contents, Pull requests, Issues and Workflows write)
+# to cover that; pull requests it opens also run CI by themselves. Without it,
+# GitHub Actions must be allowed to create pull requests (Settings → Actions →
+# General → Workflow permissions).
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_URL: https://github.com/siteboon/claudecodeui.git
+
+jobs:
+  sync:
+    name: Mirror main and merge a new upstream release
+    if: github.repository == 'kilaslab/claudecodeui'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      branch: ${{ steps.merge.outputs.branch }}
+      tag: ${{ steps.merge.outputs.tag }}
+    steps:
+      - name: Checkout kilas
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: kilas
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Fetch upstream
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "${UPSTREAM_URL}"
+          git fetch --no-tags upstream main
+          git fetch upstream 'refs/tags/v*:refs/tags/v*'
+
+      # A non-fast-forward push fails, which is the point: main mirrors upstream.
+      - name: Fast-forward main
+        run: git push origin refs/remotes/upstream/main:refs/heads/main
+
+      - name: Merge the latest upstream release
+        id: merge
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+        run: |
+          tag="$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)"
+          if [ -z "${tag}" ]; then
+            echo "No upstream release tag found."
+            exit 0
+          fi
+          if git merge-base --is-ancestor "${tag}" HEAD; then
+            echo "kilas already contains upstream ${tag}."
+            exit 0
+          fi
+          branch="sync/${tag}"
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null; then
+            echo "${branch} already exists; its pull request or issue is pending."
+            exit 0
+          fi
+          git push origin "refs/tags/${tag}"
+          git switch -c "${branch}"
+
+          if ! git merge --no-ff --no-edit -m "Merge upstream ${tag} into kilas" "${tag}"; then
+            conflicted="$(git diff --name-only --diff-filter=U)"
+            others="$(printf '%s\n' "${conflicted}" | grep -v -x -e package.json -e package-lock.json || true)"
+            if [ -n "${others}" ]; then
+              git merge --abort
+              title="Upstream ${tag} does not merge cleanly into kilas"
+              if [ -z "$(gh issue list --state open --search "\"${title}\" in:title" --json number --jq '.[].number')" ]; then
+                {
+                  echo "Merging upstream \`${tag}\` into \`kilas\` conflicts in:"
+                  echo
+                  printf '%s\n' "${others}" | sed 's/^/- `/; s/$/`/'
+                  echo
+                  echo "Resolve it locally:"
+                  echo
+                  echo '```bash'
+                  echo "git fetch upstream --tags && git switch -c ${branch} kilas"
+                  echo "git merge --no-ff ${tag}"
+                  echo "git checkout ${tag} -- package.json package-lock.json"
+                  echo "node scripts/fork/apply-package-identity.mjs ${tag#v}-kilas.0"
+                  echo "npm install --package-lock-only --ignore-scripts"
+                  echo '```'
+                  echo
+                  echo "Then push \`${branch}\` and open a pull request into \`kilas\`."
+                } > issue.md
+                gh issue create --title "${title}" --body-file issue.md
+              fi
+              exit 0
+            fi
+          fi
+
+          # Upstream's dependencies win; the fork's name, bin, links and a fresh
+          # version go back on top.
+          git checkout "${tag}" -- package.json package-lock.json
+          node scripts/fork/apply-package-identity.mjs "${tag#v}-kilas.0"
+          npm install --package-lock-only --ignore-scripts
+          git add package.json package-lock.json
+          if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+            git commit --no-edit
+          else
+            git commit -m "chore(fork): version ${tag#v}-kilas.0"
+          fi
+
+          git push origin "${branch}"
+          echo "branch=${branch}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+  checks:
+    needs: sync
+    if: needs.sync.outputs.branch != ''
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.sync.outputs.branch }}
+
+  pull-request:
+    name: Open the pull request
+    needs: [sync, checks]
+    # Opened whatever the checks say; the body reports their result.
+    if: always() && needs.sync.outputs.branch != ''
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Open the pull request into kilas
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          BRANCH: ${{ needs.sync.outputs.branch }}
+          TAG: ${{ needs.sync.outputs.tag }}
+          CHECKS: ${{ needs.checks.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "Merges upstream [\`${TAG}\`](https://github.com/siteboon/claudecodeui/releases/tag/${TAG}) into \`kilas\`."
+            echo
+            echo "- Checks on this branch: **${CHECKS}** ([run](${RUN_URL})). Without a SYNC_TOKEN secret"
+            echo "  this pull request starts no CI by itself; close and reopen it to run CI here."
+            echo "- \`package.json\` and \`package-lock.json\` are upstream's, with the fork identity re-applied"
+            echo "  and the version set to \`${TAG#v}-kilas.0\`. Bump it to \`-kilas.1\` before tagging a release."
+            echo "- Review upstream's release notes for changes that overlap the fork's patches"
+            echo "  (Claude runtime, chat composer, session history)."
+          } > body.md
+          gh pr create --repo "${GITHUB_REPOSITORY}" --base kilas --head "${BRANCH}" \
+            --title "Merge upstream ${TAG} into kilas" --body-file body.md

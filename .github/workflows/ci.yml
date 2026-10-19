@@ -7,7 +7,16 @@ on:
   push:
     branches:
       - kilas
+  # The publish and upstream-sync workflows run the same checks first. A pull
+  # request the sync workflow opens with GITHUB_TOKEN triggers no workflow of
+  # its own, so the sync passes the branch it built as `ref`.
   workflow_call:
+    inputs:
+      ref:
+        description: Branch, tag or SHA to check out instead of the triggering ref
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -27,6 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
 
       - name: Set up Node.js

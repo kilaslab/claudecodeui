@@ -1,0 +1,114 @@
+name: Publish
+
+# Publishes @kilaslab/agent-console to npm and creates the GitHub release when
+# a release tag is pushed. The tag must match package.json's version:
+#
+#   git tag -a v1.37.5-kilas.1 -m "Agent Console 1.37.5-kilas.1"
+#   git push kilas v1.37.5-kilas.1
+#
+# npm authentication: trusted publishing (OIDC) when it is configured for this
+# workflow on npmjs.com, otherwise the NPM_TOKEN repository secret.
+on:
+  push:
+    tags:
+      - 'v*-kilas.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    if: github.repository == 'kilaslab/claudecodeui'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish to npm and create the GitHub release
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # the GitHub release
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # The release notes list the commits since the previous release tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Node 24 bundles an npm recent enough for trusted publishing.
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Check the tag matches package.json
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${version}"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      - name: Build
+        run: npm run build
+
+      # Packing first means the tarball npm publishes is the one attached to the
+      # release, and the build is not repeated by prepublishOnly.
+      - name: Pack
+        run: |
+          tarball="$(npm pack --silent | tail -n 1)"
+          echo "TARBALL=${tarball}" >> "$GITHUB_ENV"
+
+      # A `-kilas.N` version is a prerelease to npm, which then requires an
+      # explicit dist-tag; these releases are the ones to install.
+      - name: Publish to npm
+        run: npm publish "${TARBALL}" --access public --tag latest --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          upstream_version="${VERSION%%-kilas.*}"
+          previous_tag="$(git describe --tags --abbrev=0 --match 'v*-kilas.*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          if [ -n "${previous_tag}" ]; then
+            range="${previous_tag}..${GITHUB_REF_NAME}"
+          elif git rev-parse -q --verify "refs/tags/v${upstream_version}" >/dev/null; then
+            range="v${upstream_version}..${GITHUB_REF_NAME}"
+          else
+            range="-n 100 ${GITHUB_REF_NAME}"
+          fi
+          {
+            echo "Agent Console ${VERSION}, a modified version of CloudCLI UI (https://github.com/siteboon/claudecodeui), based on upstream v${upstream_version}."
+            echo
+            echo '```bash'
+            echo "npm install -g @kilaslab/agent-console@${VERSION}"
+            echo '```'
+            echo
+            echo "## Changes"
+            echo
+            # shellcheck disable=SC2086 # range holds options on purpose
+            git log --first-parent --format='- %s (%h)' ${range}
+          } > release-notes.md
+          gh release create "${GITHUB_REF_NAME}" "${TARBALL}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Agent Console ${VERSION}" \
+            --notes-file release-notes.md \
+            --verify-tag \
+            --latest
