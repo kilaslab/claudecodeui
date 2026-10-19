@@ -19,8 +19,11 @@ permissions:
 # This workflow publishes releases with write credentials, so actions are pinned
 # to immutable commit SHAs. The trailing comments keep the original major tag
 # visible for maintenance context.
+# Upstream-only: these jobs need siteboon's secrets and release targets.
+# Forks (kilaslab/claudecodeui publishes through publish.yml) skip them.
 jobs:
   release:
+    if: github.repository == 'siteboon/claudecodeui'
     runs-on: ubuntu-latest
     permissions:
       contents: write

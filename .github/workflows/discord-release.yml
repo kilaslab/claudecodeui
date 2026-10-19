@@ -4,8 +4,11 @@ on:
   release:
     types: [published]
 
+# Upstream-only: these jobs need siteboon's secrets and release targets.
+# Forks (kilaslab/claudecodeui publishes through publish.yml) skip them.
 jobs:
   github-releases-to-discord:
+    if: github.repository == 'siteboon/claudecodeui'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

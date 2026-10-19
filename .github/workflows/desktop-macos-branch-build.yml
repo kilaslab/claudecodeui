@@ -6,8 +6,11 @@ on:
     branches:
       - electron-app
 
+# Upstream-only: these jobs need siteboon's secrets and release targets.
+# Forks (kilaslab/claudecodeui publishes through publish.yml) skip them.
 jobs:
   build-macos:
+    if: github.repository == 'siteboon/claudecodeui'
     name: Build macOS desktop artifact
     runs-on: macos-latest
     permissions:

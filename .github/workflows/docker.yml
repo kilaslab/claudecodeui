@@ -8,8 +8,11 @@ on:
         required: false
         type: string
 
+# Upstream-only: these jobs need siteboon's secrets and release targets.
+# Forks (kilaslab/claudecodeui publishes through publish.yml) skip them.
 jobs:
   build:
+    if: github.repository == 'siteboon/claudecodeui'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
