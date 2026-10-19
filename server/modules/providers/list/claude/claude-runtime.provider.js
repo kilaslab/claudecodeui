@@ -64,7 +64,44 @@ const supersededInstances = new WeakSet();
 // both appending to the same transcript.
 const heldTurns = new Map();
 
-const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
+// Longest delay a Node timer honours. A longer one overflows and fires after
+// about 1 ms (with a TimeoutOverflowWarning), the opposite of what was asked.
+const MAX_TIMER_DELAY_MS = 2147483647;
+
+/**
+ * Reads a millisecond setting from the environment.
+ *
+ * An explicit `0` is kept (for the approval timeout it means "wait
+ * indefinitely"); `|| fallback` used to turn it back into the default. Values
+ * above the longest timer delay are clamped to it instead of overflowing, and
+ * a positive value below 1 ms becomes 1 ms rather than 0. Unset, empty, negative or non-numeric values use the fallback.
+ *
+ * Exported for `server/modules/providers/tests/claude-env-milliseconds.test.ts`,
+ * which checks the parsing without reloading this module per environment value.
+ * @param {string|undefined} raw - Raw environment value
+ * @param {number} fallback - Value used when `raw` is not a usable number
+ * @returns {number} Whole milliseconds in [0, MAX_TIMER_DELAY_MS]
+ */
+export function readMillisecondsEnv(raw, fallback) {
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return fallback;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    console.warn(`[Claude SDK] Ignoring invalid millisecond setting "${raw}"; using ${fallback} ms`);
+    return fallback;
+  }
+  if (value > MAX_TIMER_DELAY_MS) {
+    console.warn(`[Claude SDK] ${raw} ms exceeds the longest timer delay; using ${MAX_TIMER_DELAY_MS} ms`);
+    return MAX_TIMER_DELAY_MS;
+  }
+  // Only an explicit 0 means "no timeout": a positive fraction below 1 ms
+  // rounds up instead of down to 0.
+  return value > 0 ? Math.max(1, Math.floor(value)) : 0;
+}
+
+// 0 waits for the owner indefinitely, like interaction-required tools do.
+const TOOL_APPROVAL_TIMEOUT_MS = readMillisecondsEnv(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 55000);
 
 const DEFAULT_BG_WAIT_CEILING_MS = 30 * 60 * 1000;
 // Anything shorter is far more likely a unit slip than a real ceiling: a value
