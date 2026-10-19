@@ -37,6 +37,8 @@ const renderHandlers = () => {
     streamTimerRef: { current: null },
     accumulatedStreamRef: { current: '' },
     lastSeqRef: { current: new Map() },
+    watchedRunSessionsRef: { current: new Map() },
+    onIdleAckMissedRun: () => {},
     statusCheckSentAtRef: { current: new Map() },
     // A pending steer is present for the session in both cases below (the
     // real bug used exactly this — "a steer is pending" — as its
