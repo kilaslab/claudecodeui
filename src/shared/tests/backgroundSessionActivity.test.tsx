@@ -147,3 +147,24 @@ test('a polled entry that carries tasks but no background flag is a response in 
   assert.equal(result.current.getSessionActivity('session-1')?.background, undefined);
   assert.deepEqual(result.current.getSessionActivity('session-1')?.tasks, [listed]);
 });
+
+test('a background session listed as a run again can be interrupted', () => {
+  // The held process starts a turn to relay what its work did. The poll lists
+  // it as a run without `canInterrupt`; the background entry's `false` must
+  // not keep Stop hidden.
+  const { result } = renderHook(() => useSessionProtection());
+  const listed = task({ startedAt: Date.now() - 120_000 });
+
+  act(() => {
+    result.current.syncProcessingSessions([
+      { sessionId: 'session-1', startedAt: listed.startedAt, canInterrupt: false, background: true, tasks: [listed] },
+    ]);
+  });
+  assert.equal(result.current.getSessionActivity('session-1')?.canInterrupt, false);
+
+  act(() => {
+    result.current.syncProcessingSessions([{ sessionId: 'session-1', startedAt: Date.now() }]);
+  });
+  assert.equal(result.current.isSessionProcessing('session-1'), true);
+  assert.equal(result.current.getSessionActivity('session-1')?.canInterrupt, true);
+});

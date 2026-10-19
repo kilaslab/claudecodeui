@@ -9,6 +9,7 @@ import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude
 import {
   abortClaudeSDKSession,
   hasActiveHeldTurn,
+  listActiveHeldTurns,
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
   readHeldTurnWaitMs,
@@ -518,6 +519,7 @@ test('a held process relaying its last task reads busy from the settle to the re
     await settle();
     assert.deepEqual(listClaudeSDKBackgroundWork(), []);
     assert.equal(hasActiveHeldTurn(SESSION_ID), true, 'busy from the settle');
+    assert.deepEqual(listActiveHeldTurns().map((turn) => turn.sessionId), [SESSION_ID]);
 
     script.emit(assistantText('The job finished.'));
     await settle();
@@ -526,6 +528,7 @@ test('a held process relaying its last task reads busy from the settle to the re
     script.emit(result());
     await settle();
     assert.equal(hasActiveHeldTurn(SESSION_ID), false, 'idle once the relay turn ends');
+    assert.deepEqual(listActiveHeldTurns(), []);
     assert.equal(script.released(), true);
   });
 });

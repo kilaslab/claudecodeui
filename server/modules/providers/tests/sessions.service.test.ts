@@ -501,17 +501,75 @@ test('a held session the CLI reports busy is listed once, as processing, with it
       async () => await withProviders(
         { claude: { run: async () => undefined, abort: () => false, listBackgroundWork: () => [{ sessionId: 'held-busy', tasks }] } },
         async () => {
+          // No `canInterrupt: false`: the held process is the runtime's own,
+          // so Stop can interrupt the turn.
           assert.deepEqual(await sessionsService.listRunningSessions(), [{
             sessionId: 'held-busy',
             provider: 'claude',
             startedAt: 1_000,
             lastSeq: 0,
-            canInterrupt: false,
             statusText: 'Running in the Claude CLI',
             tasks,
           }]);
         },
       ),
+    );
+  });
+});
+
+test('a held process relaying its last task is listed as a run Stop can interrupt', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('held-relay', 'claude', '/tmp/running-project');
+    sessionsDb.assignProviderSessionId('held-relay', 'claude-native-held-relay');
+
+    // The last task settled, so the session has left listBackgroundWork, and
+    // the CLI's registry reports the process busy with the relay turn.
+    await withClaudeCliRegistry(
+      [{ pid: process.pid, sessionId: 'claude-native-held-relay', status: 'busy', startedAt: 3_000 }],
+      async () => await withProviders(
+        {
+          claude: {
+            run: async () => undefined,
+            abort: () => false,
+            listBackgroundWork: () => [],
+            listActiveHeldTurns: () => [{ sessionId: 'held-relay', startedAt: 2_000 }],
+          },
+        },
+        async () => {
+          assert.deepEqual(await sessionsService.listRunningSessions(), [{
+            sessionId: 'held-relay',
+            provider: 'claude',
+            startedAt: 2_000,
+            lastSeq: 0,
+          }]);
+        },
+      ),
+    );
+  });
+});
+
+test('a held process relaying one task while another runs is listed as a run, with its tasks', { concurrency: false }, async () => {
+  await withIsolatedDatabase(async () => {
+    const tasks = [task('second', 1_000)];
+
+    await withProviders(
+      {
+        claude: {
+          run: async () => undefined,
+          abort: () => false,
+          listBackgroundWork: () => [{ sessionId: 'held-relay-more', tasks }],
+          listActiveHeldTurns: () => [{ sessionId: 'held-relay-more', startedAt: 2_000 }],
+        },
+      },
+      async () => {
+        assert.deepEqual(await sessionsService.listRunningSessions(), [{
+          sessionId: 'held-relay-more',
+          provider: 'claude',
+          startedAt: 1_000,
+          lastSeq: 0,
+          tasks,
+        }]);
+      },
     );
   });
 });

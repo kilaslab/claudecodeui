@@ -67,6 +67,12 @@ export interface IProviderRuntime {
    */
   hasActiveHeldTurn?(sessionId: string): boolean;
   /**
+   * Every session for which `hasActiveHeldTurn` holds, with when that turn
+   * began. The running-sessions poll lists these as a response in flight that
+   * Stop can interrupt: the process belongs to the runtime.
+   */
+  listActiveHeldTurns?(): Array<{ sessionId: string; startedAt: number }>;
+  /**
    * Stops one outstanding background task. Resolves false when the session has
    * no live process or that process is not tracking the task — it already
    * settled, or the id was never one of its own.

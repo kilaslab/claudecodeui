@@ -27,7 +27,9 @@ import { AppError, sliceTailPage } from '@/shared/utils.js';
  * `background: true` and `canInterrupt: false`: the composer stays usable
  * (the runtime accepts a new turn while the work runs) and there is no run to
  * abort — a task is stopped by id through `chat.stop-task` instead. `tasks`
- * rides along on both kinds whenever the session has any.
+ * rides along on both kinds whenever the session has any. Once the process
+ * held for that work runs a turn to relay it, the session is listed as a run
+ * again, one Stop can interrupt.
  *
  * A turn driven outside CloudCLI — the Claude CLI in the Shell view, or a
  * terminal the user opened themselves — is listed the same way, with
@@ -187,6 +189,28 @@ export const sessionsService = {
         entries.push(entry);
         runningById.set(sessionId, entry);
       }
+
+      // A held process relaying what its background work did runs a turn of
+      // its own. That is a response in flight, not idle background work, and
+      // Stop can interrupt it: the process is the runtime's, which chat.abort
+      // reaches through hasBackgroundWork. When the relayed task was the last
+      // one, the session has already left listBackgroundWork.
+      for (const { sessionId, startedAt } of provider.runtime.listActiveHeldTurns?.() ?? []) {
+        const listed = runningById.get(sessionId);
+        if (listed) {
+          delete listed.background;
+          delete listed.canInterrupt;
+          continue;
+        }
+        const entry: RunningSessionEntry = {
+          sessionId,
+          provider: provider.id,
+          startedAt,
+          lastSeq: chatRunRegistry.getRun(sessionId)?.lastSeq ?? 0,
+        };
+        entries.push(entry);
+        runningById.set(sessionId, entry);
+      }
     }
 
     // The chat-run registry only knows about turns CloudCLI drives itself, so
@@ -204,12 +228,14 @@ export const sessionsService = {
           // The process held open for this session's background work is in a
           // turn — relaying a task that finished while another still runs,
           // say. That is a response in flight, not idle background work: a
-          // client shown "background" here would offer to send over it.
+          // client shown "background" here would offer to send over it. The
+          // process is still the runtime's own, so Stop can interrupt it.
           console.warn(
             `[Sessions] Claude CLI reports busy for held session ${session.session_id} `
             + `(pid ${live.pid}, ${listed.tasks?.length ?? 0} background task(s)); listing it as processing`,
           );
           delete listed.background;
+          delete listed.canInterrupt;
           listed.statusText = 'Running in the Claude CLI';
         }
         continue;

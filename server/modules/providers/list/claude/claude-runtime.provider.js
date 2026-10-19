@@ -586,7 +586,7 @@ function beginHeldTurn(sessionKey, instance) {
   }
   let end;
   const ended = new Promise((resolve) => { end = resolve; });
-  heldTurns.set(sessionKey, { instance, ended, end });
+  heldTurns.set(sessionKey, { instance, ended, end, startedAt: Date.now() });
 }
 
 function endHeldTurn(sessionKey, instance) {
@@ -606,6 +606,16 @@ function endHeldTurn(sessionKey, instance) {
  */
 function hasActiveHeldTurn(sessionId) {
   return heldTurns.has(sessionId);
+}
+
+/**
+ * Every session whose held process is running a turn of its own right now
+ * (see hasActiveHeldTurn), with when that turn began. The running-sessions
+ * poll lists these as a response in flight, which Stop can interrupt.
+ * @returns {Array<{ sessionId: string, startedAt: number }>}
+ */
+function listActiveHeldTurns() {
+  return [...heldTurns].map(([sessionId, turn]) => ({ sessionId, startedAt: turn.startedAt }));
 }
 
 function settlesWithin(promise, ms) {
@@ -2145,6 +2155,7 @@ export const claudeRuntime = {
   },
   listBackgroundWork: listClaudeSDKBackgroundWork,
   hasActiveHeldTurn,
+  listActiveHeldTurns,
   stopBackgroundTask: stopClaudeSDKTask,
 };
 
@@ -2155,6 +2166,7 @@ export {
   steerClaudeSDKSession,
   listClaudeSDKBackgroundWork,
   hasActiveHeldTurn,
+  listActiveHeldTurns,
   readHeldTurnWaitMs,
   stopClaudeSDKTask,
   isClaudeSDKSessionActive,

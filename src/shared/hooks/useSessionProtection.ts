@@ -188,10 +188,14 @@ export function useSessionProtection() {
           continue;
         }
 
+        // A background entry's `canInterrupt: false` only says there was no
+        // response to abort; it does not carry over once the session is listed
+        // as a run again (a held process relaying what its work did).
+        const inheritedCanInterrupt = existing && !existing.background ? existing.canInterrupt : undefined;
         updated.set(sessionId, {
           statusText:
             snapshot.statusText !== undefined ? snapshot.statusText : existing?.statusText ?? null,
-          canInterrupt: snapshot.canInterrupt ?? existing?.canInterrupt ?? true,
+          canInterrupt: snapshot.canInterrupt ?? inheritedCanInterrupt ?? true,
           startedAt: snapshotStartedAt ?? existing?.startedAt ?? now,
           ...(snapshot.background ? { background: true } : {}),
           ...(snapshot.tasks ? { tasks: snapshot.tasks } : {}),
