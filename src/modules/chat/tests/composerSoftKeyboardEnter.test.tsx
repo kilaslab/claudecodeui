@@ -82,7 +82,7 @@ const enterEvent = (overrides: { shiftKey?: boolean; ctrlKey?: boolean } = {}) =
 };
 
 /** Mounts the composer hook against an open session and a recording sendMessage. */
-const renderComposer = (sendMessage: ReturnType<typeof vi.fn>, sendByCtrlEnter?: boolean) => renderHook(
+const renderComposer = (sendMessage: ReturnType<typeof vi.fn>, sendByCtrlEnter?: boolean, isLoading = false) => renderHook(
   () => useChatComposerState({
     selectedProject: PROJECT,
     selectedSession: SESSION,
@@ -93,7 +93,7 @@ const renderComposer = (sendMessage: ReturnType<typeof vi.fn>, sendByCtrlEnter?:
     resolvePermissionModeForProvider: () => 'default' as PermissionMode,
     currentProviderModel: 'test-model',
     currentProviderEffort: 'medium',
-    isLoading: false,
+    isLoading,
     canAbortSession: false,
     tokenBudget: null,
     sendMessage,
@@ -174,4 +174,17 @@ test('Shift+Enter stays a newline in every environment', async () => {
   await typeAndPress(view, enterEvent({ shiftKey: true }));
 
   assert.equal(sendMessage.mock.calls.length, 0);
+});
+
+test('on a soft keyboard, plain Enter during a running turn inserts the newline instead of queueing', async () => {
+  coarsePointer = true;
+  const sendMessage = vi.fn();
+  const view = renderComposer(sendMessage, undefined, true);
+  const enter = enterEvent();
+
+  await typeAndPress(view, enter);
+
+  assert.equal(sendMessage.mock.calls.length, 0);
+  assert.equal(enter.wasPrevented(), false);
+  assert.equal(view.result.current.input, 'hello world', 'nothing was taken out of the composer to queue');
 });

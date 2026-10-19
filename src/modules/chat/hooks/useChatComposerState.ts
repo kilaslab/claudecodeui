@@ -1691,7 +1691,9 @@ export function useChatComposerState({
               handleSubmit(event, undefined, { mode });
               return;
             }
-            if (!event.shiftKey) {
+            // Same soft-keyboard rule as the idle case below: the return key
+            // inserts a newline, and the send button picks the mode.
+            if (!event.shiftKey && !isSoftKeyboardEnvironment()) {
               event.preventDefault();
               setSendMode('queue');
               handleSubmit(event, undefined, { mode: 'queue' });
