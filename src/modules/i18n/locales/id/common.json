@@ -250,7 +250,7 @@
     "viewFullRelease": "Lihat rilis lengkap",
     "updateProgress": "Progres Pembaruan:",
     "manualUpgrade": "Pembaruan manual:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
+    "npmUpgradeCommand": "npm install -g @kilaslab/agent-console@latest",
     "manualUpgradeHint": "Atau klik \"Perbarui Sekarang\" untuk menjalankan pembaruan secara otomatis.",
     "updateCompleted": "Pembaruan berhasil diselesaikan!",
     "restartServer": "Mulai ulang server untuk menerapkan perubahan.",

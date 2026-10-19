@@ -13,6 +13,7 @@ function createDependencies(
     homeDirectory: '/home/cloudcli',
     installMode: 'git',
     isPlatform: false,
+    npmUpdateCommand: 'npm install -g @cloudcli-ai/cloudcli@npm:@kilaslab/agent-console@latest',
     environment: { TEST_ENVIRONMENT: 'true' },
     runShellCommand: async () => ({ exitCode: 0, output: 'updated', errorOutput: '' }),
     logInfo: () => undefined,
@@ -34,7 +35,7 @@ test('git installations update from the application root', async () => {
   const result = await service.updateSystem();
 
   assert.deepEqual(calls, [[
-    'git checkout main && git pull && npm install',
+    'git checkout kilas && git pull && npm install',
     '/app/cloudcli',
     dependencies.environment,
   ]]);
@@ -59,7 +60,7 @@ test('global npm installations update from the user home directory', async () =>
   const result = await service.updateSystem();
 
   assert.deepEqual(calls, [[
-    'npm install -g @cloudcli-ai/cloudcli@latest',
+    'npm install -g @cloudcli-ai/cloudcli@npm:@kilaslab/agent-console@latest',
     '/home/cloudcli',
     dependencies.environment,
   ]]);

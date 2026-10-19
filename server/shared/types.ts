@@ -1639,15 +1639,31 @@ export type CliFileSystem = {
 export type CliEnvironment = Record<string, string | undefined>;
 
 /**
+ * How npm knows this installation, as read by `readNpmPackageInstallation`.
+ *
+ * `packageName` is the name in the application's package.json. `installName`
+ * is the folder npm installed it under, which differs when it was installed
+ * under an alias. `globalInstallCommand` replaces this installation with the
+ * latest release in place, keeping that alias.
+ */
+export type NpmPackageInstallation = {
+  packageName: string;
+  installName: string;
+  globalInstallCommand: string;
+};
+
+/**
  * Package metadata displayed by CLI help, status, version, and update commands.
  *
  * The composition root reads this once from the application package file and
- * injects only the fields the service needs.
+ * injects only the fields the service needs. `updateCommand` is the command a
+ * user can run by hand when `agent-console update` fails.
  */
 export type CliPackageMetadata = {
   version: string;
   homepage?: string;
   bugsUrl?: string;
+  updateCommand: string;
 };
 
 /**

@@ -64,7 +64,7 @@ export function createCliApplication() {
     applicationRoot: ${JSON.stringify(fixtureRoot)},
     defaultDatabasePath: ${JSON.stringify(fixtureDatabasePath)},
     homeDirectory: ${JSON.stringify(fixtureRoot)},
-    packageMetadata: { version: '1.0.0' },
+    packageMetadata: { version: '1.0.0', updateCommand: 'npm install -g example-cli@latest' },
     environment: process.env,
     fileSystem: {
       readTextFile: () => {

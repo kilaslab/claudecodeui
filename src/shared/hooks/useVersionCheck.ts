@@ -4,16 +4,29 @@ import { APP_VERSION } from '@/shared/constants';
 import type { InstallMode, ReleaseInfo } from '@/shared/types';
 
 /**
- * Compare two semantic version strings
- * Works only with numeric versions separated by dots (e.g. "1.2.3")
- * @param {string} v1 
- * @param {string} v2
+ * Reads the numbers a version is ordered by: the `X.Y.Z` core, then the build
+ * number of a distribution suffix such as `-kilas.3` (a fork release of the
+ * upstream `X.Y.Z`, so it sorts after the plain core). Anything else counts as 0.
+ */
+const readVersionNumbers = (version: string): number[] => {
+  const [core, suffix = ''] = version.split('-', 2);
+  const coreNumbers = core.split('.').slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  while (coreNumbers.length < 3) {
+    coreNumbers.push(0);
+  }
+  const suffixBuild = Number.parseInt(suffix.split('.').pop() ?? '', 10);
+  return [...coreNumbers, Number.isFinite(suffixBuild) ? suffixBuild : 0];
+};
+
+/**
+ * Compare two version strings, `X.Y.Z` with an optional `-name.N` suffix.
+ * Exported for the shared version-check tests; the hook below is its consumer.
  * @returns positive if v1 > v2, negative if v1 < v2, 0 if equal
  */
-const compareVersions = (v1: string, v2: string) => {
-  const parts1 = v1.split('.').map(Number);
-  const parts2 = v2.split('.').map(Number);
-  
+export const compareVersions = (v1: string, v2: string) => {
+  const parts1 = readVersionNumbers(v1);
+  const parts2 = readVersionNumbers(v2);
+
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
     const p1 = parts1[i] || 0;
     const p2 = parts2[i] || 0;
@@ -30,6 +43,10 @@ export const useVersionCheck = (owner: string, repo: string) => {
   const [installMode, setInstallMode] = useState<InstallMode>('git');
   const [runningVersion, setRunningVersion] = useState<string | null>(null);
   const [restartRequired, setRestartRequired] = useState(false);
+  // The server's command for updating its global npm install in place: only
+  // the server knows the alias it was installed under. Null until /health
+  // answers, or when the server cannot tell.
+  const [npmUpdateCommand, setNpmUpdateCommand] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchHealth = async () => {
@@ -38,6 +55,9 @@ export const useVersionCheck = (owner: string, repo: string) => {
         const data = await response.json();
         if (data.installMode === 'npm' || data.installMode === 'git') {
           setInstallMode(data.installMode);
+        }
+        if (typeof data.npmUpdateCommand === 'string' && data.npmUpdateCommand.length > 0) {
+          setNpmUpdateCommand(data.npmUpdateCommand);
         }
         // `data.version` is the version the server process is actually running.
         // This module's `version` is baked into the frontend bundle at build
@@ -95,5 +115,5 @@ export const useVersionCheck = (owner: string, repo: string) => {
     return () => clearInterval(interval);
   }, [owner, repo]);
 
-  return { updateAvailable, latestVersion, currentVersion: APP_VERSION, releaseInfo, installMode, runningVersion, restartRequired };
+  return { updateAvailable, latestVersion, currentVersion: APP_VERSION, releaseInfo, installMode, npmUpdateCommand, runningVersion, restartRequired };
 };

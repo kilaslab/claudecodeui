@@ -14,6 +14,8 @@ type VersionUpgradeModalProps = {
     currentVersion: string;
     latestVersion: string | null;
     installMode: InstallMode;
+    /** The server's in-place update command for a global npm install; null when unknown. */
+    npmUpdateCommand: string | null;
 };
 
 const RELOAD_COUNTDOWN_START = 120;
@@ -25,14 +27,18 @@ export function VersionUpgradeModal({
     releaseInfo,
     currentVersion,
     latestVersion,
-    installMode
+    installMode,
+    npmUpdateCommand
 }: VersionUpgradeModalProps) {
     const { t } = useTranslation('common');
+    // The server names the package and the alias it was installed under; the
+    // translated command is only a fallback for a server that does not say.
+    // A source checkout of this fork releases from `kilas`, not `main`.
     const upgradeCommand = installMode === 'npm'
-        ? t('versionUpdate.npmUpgradeCommand')
+        ? npmUpdateCommand ?? t('versionUpdate.npmUpgradeCommand')
         : IS_PLATFORM
             ? 'npm run update:platform'
-            : 'git checkout main && git pull && npm install';
+            : 'git checkout kilas && git pull && npm install';
     const [isUpdating, setIsUpdating] = useState(false);
     const [updateOutput, setUpdateOutput] = useState('');
     const [updateError, setUpdateError] = useState('');

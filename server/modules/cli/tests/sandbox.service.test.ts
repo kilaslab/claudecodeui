@@ -9,6 +9,7 @@ test('creates a sandbox through injected filesystem, subprocess, and clock adapt
   const waits: number[] = [];
   const service = createSandboxCommandService({
     homeDirectory: '/home/user',
+    globalInstallCommand: 'npm install -g example-cli',
     fileSystem: {
       pathExists: (candidatePath) => candidatePath === '/home/user/project',
     },
@@ -43,6 +44,7 @@ test('does not spawn when the workspace does not exist', async () => {
   let detachedCalls = 0;
   const service = createSandboxCommandService({
     homeDirectory: '/home/user',
+    globalInstallCommand: 'npm install -g example-cli',
     fileSystem: {
       pathExists: () => false,
     },

@@ -1,11 +1,12 @@
 import { Settings, ArrowUpCircle, Bug, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { PRODUCT_NAME, RELEASE_REPOSITORY_URL, UPSTREAM_REPOSITORY_URL } from '@/shared/constants';
 import { IS_PLATFORM } from '@/shared/utils';
 import type { ReleaseInfo } from '@/shared/types';
 
-const GITHUB_ISSUES_URL = 'https://github.com/siteboon/claudecodeui/issues/new';
-const GITHUB_REPO_URL = 'https://github.com/siteboon/claudecodeui';
+// Bugs in this modified version belong to its own tracker, not upstream's.
+const GITHUB_ISSUES_URL = `${RELEASE_REPOSITORY_URL}/issues/new`;
 
 const DISCORD_INVITE_URL = 'https://discord.gg/buxwujPNRE';
 
@@ -145,16 +146,26 @@ export default function SidebarFooter({
         </button>
       </div>
 
-      {/* Desktop version brand line (OSS mode only) */}
+      {/* Desktop version brand line (OSS mode only). The upstream license
+          requires a modified version to say so, so the line names this
+          distribution, links its source and credits the original. */}
       {!IS_PLATFORM && (
         <div className="hidden px-3 py-2 text-center md:block">
           <a
-            href={GITHUB_REPO_URL}
+            href={RELEASE_REPOSITORY_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+            className="block text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
           >
-            CloudCLI v{currentVersion} – {t('branding.openSource')}
+            {PRODUCT_NAME} v{currentVersion} – {t('branding.openSource')}
+          </a>
+          <a
+            href={UPSTREAM_REPOSITORY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
+          >
+            {t('branding.modifiedFrom')}
           </a>
         </div>
       )}

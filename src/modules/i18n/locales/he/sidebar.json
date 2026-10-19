@@ -20,7 +20,7 @@
     "runClaudeCli": "כדי להתחיל, יש להריץ את Claude CLI בתיקיית פרויקט"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "Agent Console",
     "subtitle": "ממשק לעוזר תכנות AI"
   },
   "sessions": {

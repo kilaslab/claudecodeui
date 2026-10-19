@@ -156,7 +156,7 @@ function getMcpCommand(): { command: string; args: string[] } {
   }
 
   return {
-    command: 'cloudcli',
+    command: 'agent-console',
     args: ['browser-use-mcp'],
   };
 }

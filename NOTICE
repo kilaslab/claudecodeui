@@ -11,3 +11,15 @@ Contributions by Siteboon AI B.V. prior to commit 004135ef were originally
 published under GPL-3.0 and are hereby relicensed to AGPL-3.0-or-later.
 Contributions by other authors prior to that commit remain under GPL-3.0
 and are incorporated into this work as permitted by GPL-3.0 Section 13.
+
+-------------------------------------------------------------------------
+
+Agent Console
+Modified by kilaslab, 2026 (https://github.com/kilaslab/claudecodeui).
+
+Agent Console is a modified version of
+CloudCLI UI (https://github.com/siteboon/claudecodeui)
+and is not the original software. The modifications are licensed under
+AGPL-3.0-or-later with the same additional terms. Their full history is in
+the repository above, which is also where the source of every published
+version can be found.

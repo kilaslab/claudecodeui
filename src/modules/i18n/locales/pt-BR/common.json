@@ -252,7 +252,7 @@
     "viewFullRelease": "Ver release completo",
     "updateProgress": "Progresso da atualização:",
     "manualUpgrade": "Atualização manual:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
+    "npmUpgradeCommand": "npm install -g @kilaslab/agent-console@latest",
     "manualUpgradeHint": "Ou clique em \"Atualizar agora\" para executar a atualização automaticamente.",
     "updateCompleted": "Atualização concluída com sucesso!",
     "restartServer": "Reinicie o servidor para aplicar as mudanças.",

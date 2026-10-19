@@ -23,6 +23,7 @@ function createHarness() {
       version: '1.2.3',
       homepage: 'https://cloudcli.example',
       bugsUrl: 'https://cloudcli.example/issues',
+      updateCommand: 'npm install -g example-cli@latest',
     },
     environment,
     fileSystem: {

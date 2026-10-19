@@ -298,7 +298,7 @@
     "viewFullRelease": "לפרטי הגרסה המלאים",
     "updateProgress": "התקדמות העדכון:",
     "manualUpgrade": "שדרוג ידני:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
+    "npmUpgradeCommand": "npm install -g @kilaslab/agent-console@latest",
     "manualUpgradeHint": "או ללחוץ על \"עדכון עכשיו\" כדי להריץ את העדכון אוטומטית.",
     "updateCompleted": "העדכון הושלם בהצלחה!",
     "restartServer": "יש להפעיל מחדש את השרת כדי להחיל את השינויים.",

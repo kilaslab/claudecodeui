@@ -846,6 +846,8 @@
     "teamManagementTitle": "Team Management",
     "teamManagementDescription": "Multiple users, role-based access, and shared projects for your team.",
     "licensed": "Licensed under AGPL-3.0",
+    "modifiedVersion": "{{product}} is a modified version of {{attribution}}, not the original software.",
+    "sourceCode": "Source code of this version",
     "proCta": "Available with CloudCLI Pro"
   }
 }

@@ -304,7 +304,7 @@
     "viewFullRelease": "Zobrazit celé vydání",
     "updateProgress": "Průběh aktualizace:",
     "manualUpgrade": "Ruční aktualizace:",
-    "npmUpgradeCommand": "npm install -g @cloudcli-ai/cloudcli@latest",
+    "npmUpgradeCommand": "npm install -g @kilaslab/agent-console@latest",
     "manualUpgradeHint": "Nebo klikněte na „Aktualizovat nyní“ a aktualizace proběhne automaticky.",
     "updateCompleted": "Aktualizace dokončena.",
     "restartServer": "Restartujte prosím server, aby se změny projevily.",

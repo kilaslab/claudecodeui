@@ -1,8 +1,11 @@
 import { Settings, Sparkles, PanelLeftOpen, Bug, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import { RELEASE_REPOSITORY_URL } from '@/shared/constants';
+
 const DISCORD_INVITE_URL = 'https://discord.gg/buxwujPNRE';
-const GITHUB_ISSUES_URL = 'https://github.com/siteboon/claudecodeui/issues/new';
+// Bugs in this modified version belong to its own tracker, not upstream's.
+const GITHUB_ISSUES_URL = `${RELEASE_REPOSITORY_URL}/issues/new`;
 
 function DiscordIcon({ className }: { className?: string }) {
   return (

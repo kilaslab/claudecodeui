@@ -9,7 +9,7 @@ import http from 'http';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 
-import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, terminalTextStyles } from '@/shared/utils.js';
+import { AppError, findApplicationRoot, getModuleDirectory, IS_PLATFORM, readNpmPackageInstallation, terminalTextStyles } from '@/shared/utils.js';
 import {
     closeSessionsWatcher,
     initializeSessionsWatcher,
@@ -71,6 +71,16 @@ const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
 const RUNNING_VERSION = (() => {
     try {
         return JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'package.json'), 'utf8')).version || null;
+    } catch {
+        return null;
+    }
+})();
+// The command that updates this global npm installation in place, under the
+// package's own name and the alias it was installed under, if any. The version
+// modal shows it for a manual update.
+const NPM_UPDATE_COMMAND = (() => {
+    try {
+        return readNpmPackageInstallation(APP_ROOT).globalInstallCommand;
     } catch {
         return null;
     }
@@ -151,7 +161,8 @@ app.get('/health', (req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         installMode,
-        version: RUNNING_VERSION
+        version: RUNNING_VERSION,
+        npmUpdateCommand: NPM_UPDATE_COMMAND
     });
 });
 

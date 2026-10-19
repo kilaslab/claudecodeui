@@ -1,12 +1,12 @@
 {
-  "name": "@cloudcli-ai/cloudcli",
+  "name": "@kilaslab/agent-console",
   "version": "1.37.5-kilas.0",
   "productName": "CloudCLI",
-  "description": "A web-based UI for Claude Code CLI",
+  "description": "Agent Console: a web UI for Claude Code and other coding agents, a modified version of CloudCLI UI (https://github.com/siteboon/claudecodeui)",
   "type": "module",
   "main": "dist-server/server/index.js",
   "bin": {
-    "cloudcli": "dist-server/server/modules/cli/cli.js"
+    "agent-console": "dist-server/server/modules/cli/cli.js"
   },
   "files": [
     "electron/",
@@ -16,15 +16,19 @@
     "dist/",
     "dist-server/",
     "scripts/",
-    "README.md"
+    "README.md",
+    "NOTICE"
   ],
-  "homepage": "https://cloudcli.ai",
+  "homepage": "https://github.com/kilaslab/claudecodeui#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/siteboon/claudecodeui.git"
+    "url": "git+https://github.com/kilaslab/claudecodeui.git"
   },
   "bugs": {
-    "url": "https://github.com/siteboon/claudecodeui/issues"
+    "url": "https://github.com/kilaslab/claudecodeui/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "concurrently --kill-others \"npm run server:dev\" \"npm run client\"",

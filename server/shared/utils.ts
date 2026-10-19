@@ -24,6 +24,7 @@ import type {
   ApiSuccessShape,
   AppErrorOptions,
   NormalizedMessage,
+  NpmPackageInstallation,
   ProviderCurrentActiveModel,
   ProviderModelsDefinition,
   ProviderSkillSource,
@@ -1447,4 +1448,57 @@ export function findApplicationRoot(startDirectory: string): string {
   return path.basename(parentDirectory) === 'dist-server'
     ? path.dirname(parentDirectory)
     : parentDirectory;
+}
+
+// ---------------------------
+//----------------- NPM PACKAGE INSTALLATION UTILITIES ------------
+/**
+ * The name npm installed `applicationRoot` under, read from its place in a
+ * `node_modules` folder (`<name>` or `@scope/<name>`), or null when it is not
+ * in one, as in a source checkout.
+ */
+function readNodeModulesInstallName(applicationRoot: string): string | null {
+  const directoryName = path.basename(applicationRoot);
+  const parentDirectory = path.dirname(applicationRoot);
+  const parentName = path.basename(parentDirectory);
+  if (parentName === 'node_modules') {
+    return directoryName;
+  }
+  if (parentName.startsWith('@') && path.basename(path.dirname(parentDirectory)) === 'node_modules') {
+    return `${parentName}/${directoryName}`;
+  }
+  return null;
+}
+
+/**
+ * Reads how npm knows the installation at `applicationRoot`, so update
+ * commands and install hints name the package that is actually installed
+ * instead of a hardcoded one.
+ *
+ * The package name comes from `<applicationRoot>/package.json`. The install
+ * name is the folder npm put it in; it differs from the package name when the
+ * package was installed under an alias, such as
+ * `npm install -g @cloudcli-ai/cloudcli@npm:@kilaslab/agent-console`, which
+ * keeps scripts that start the server by its upstream path working. An update
+ * has to repeat that alias, or npm installs a second copy beside the one that
+ * is running, so `globalInstallCommand` does. Throws when package.json cannot
+ * be read, like the other startup reads of it.
+ *
+ * Used by the CLI module (version check, `update`, install hints) and the
+ * system module (the update the UI starts).
+ */
+export function readNpmPackageInstallation(applicationRoot: string): NpmPackageInstallation {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(applicationRoot, 'package.json'), 'utf8'),
+  ) as { name?: unknown };
+  const packageName = typeof packageJson.name === 'string' && packageJson.name
+    ? packageJson.name
+    : path.basename(applicationRoot);
+  const installName = readNodeModulesInstallName(applicationRoot) ?? packageName;
+  const packageSpec = installName === packageName ? packageName : `${installName}@npm:${packageName}`;
+  return {
+    packageName,
+    installName,
+    globalInstallCommand: `npm install -g ${packageSpec}@latest`,
+  };
 }

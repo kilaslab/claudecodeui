@@ -28,6 +28,35 @@ export const CLOUDCLI_WORDMARK_FONT_FAMILY =
 
 // ---------------------------
 
+//----------------- FORK IDENTITY ------------
+
+/**
+ * Name of this modified distribution. The upstream license does not let a
+ * modified version present itself as CloudCLI UI, so the app names itself this
+ * way in the tab title, the sidebar footer and the About tab.
+ */
+export const PRODUCT_NAME = 'Agent Console';
+
+/**
+ * GitHub repository this distribution releases from. The version check reads
+ * its latest release, and bug reports go to its issues, not upstream's.
+ */
+export const RELEASE_REPOSITORY = { owner: 'kilaslab', name: 'claudecodeui' } as const;
+
+/** Web URL of `RELEASE_REPOSITORY`: where users get the source of the version they run (AGPL-3.0 section 13). */
+export const RELEASE_REPOSITORY_URL = 'https://github.com/kilaslab/claudecodeui';
+
+/**
+ * Attribution notice the upstream license's additional terms (section 7(b))
+ * require every modified version to keep, verbatim and reasonably prominent.
+ */
+export const UPSTREAM_ATTRIBUTION = 'CloudCLI UI (https://github.com/siteboon/claudecodeui)';
+
+/** Web URL of the upstream project, linked next to `UPSTREAM_ATTRIBUTION`. */
+export const UPSTREAM_REPOSITORY_URL = 'https://github.com/siteboon/claudecodeui';
+
+// ---------------------------
+
 //----------------- APPLICATION VERSION ------------
 
 /**

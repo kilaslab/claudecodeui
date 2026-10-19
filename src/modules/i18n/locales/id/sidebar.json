@@ -20,7 +20,7 @@
     "runClaudeCli": "Jalankan Claude CLI di direktori proyek untuk memulai"
   },
   "app": {
-    "title": "CloudCLI",
+    "title": "Agent Console",
     "subtitle": "Antarmuka asisten coding AI"
   },
   "sessions": {

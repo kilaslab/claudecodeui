@@ -1,3 +1,61 @@
+# Agent Console
+
+> **Agent Console is a modified version of CloudCLI UI (https://github.com/siteboon/claudecodeui).**
+> It is not the original software, and Siteboon AI B.V. does not endorse it. The upstream README
+> follows below the line for reference; its commands name the upstream package.
+
+Agent Console is published from [kilaslab/claudecodeui](https://github.com/kilaslab/claudecodeui) as
+[`@kilaslab/agent-console`](https://www.npmjs.com/package/@kilaslab/agent-console). It follows upstream
+releases and adds fixes and features that are not upstream yet.
+
+## What is different from upstream
+
+- **Stop stops everything.** Stop ends the turn together with the background agents, workflows and
+  commands it started. A session that only has background work left offers "Stop all", and Stop stays
+  available while a held process reports its background work back.
+- **Steering.** A message sent while a turn runs can be folded into it, interrupt it, or wait for it
+  (upstream PR #1449).
+- **Subagents and workflows.** Subagent text streams live, an agent inspector shows each agent and the
+  agents it started, and history refreshes when a subagent's or workflow's own transcript changes.
+- **Plan mode.** The composer shows when plan mode is on, follows the model entering plan mode, and
+  leaves it after you approve the plan.
+- **Adopted upstream pull requests** (not merged upstream yet): #1288, #1309, #1364, #1365, #1379,
+  #1399, #1406, #1429, #1446, #1459, #1501, #1503, #1538, #1539, #1540, #1558, #1559, #1579, #1584,
+  #1585 and #1602, plus the CI from #1491.
+
+Each version's changes are listed in [GitHub Releases](https://github.com/kilaslab/claudecodeui/releases).
+
+## Install
+
+```bash
+npm install -g @kilaslab/agent-console
+agent-console        # serves http://localhost:3001
+```
+
+To replace an existing global CloudCLI install in place, so scripts that start the server by its
+installed path keep working:
+
+```bash
+npm install -g @cloudcli-ai/cloudcli@npm:@kilaslab/agent-console@latest
+```
+
+`agent-console update` and the in-app update keep whichever of the two names you installed under.
+
+## Versions and branches
+
+- Versions are `X.Y.Z-kilas.N`: release N of this fork's changes on top of upstream `X.Y.Z`.
+- `kilas` is the release and default branch. `main` mirrors upstream `main` and is never committed to.
+- A daily workflow fast-forwards `main` and opens a pull request into `kilas` when upstream tags a
+  new release.
+
+## License
+
+AGPL-3.0-or-later with the additional terms in [LICENSE](LICENSE); see [NOTICE](NOTICE). This fork
+keeps the attribution "CloudCLI UI (https://github.com/siteboon/claudecodeui)". The names CloudCLI and
+Siteboon belong to Siteboon AI B.V. and appear here only to describe where this software comes from.
+
+---
+
 <div align="center">
  <img src="public/logo.svg" alt="CloudCLI UI" width="64" height="64">
  <h1>Cloud CLI (aka Claude Code UI)</h1>

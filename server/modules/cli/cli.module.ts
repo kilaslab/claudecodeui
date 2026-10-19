@@ -6,7 +6,7 @@ import path from 'node:path';
 import spawn from 'cross-spawn';
 
 import type { CliApplication, CliPackageMetadata } from '@/shared/types.js';
-import { findApplicationRoot, getModuleDirectory } from '@/shared/utils.js';
+import { findApplicationRoot, getModuleDirectory, readNpmPackageInstallation } from '@/shared/utils.js';
 
 import { createCliService } from './cli.service.js';
 import { createSandboxCommandService } from './sandbox.service.js';
@@ -22,10 +22,14 @@ export function createCliApplication(): CliApplication {
   const packageMetadataJson = JSON.parse(
     fs.readFileSync(path.join(applicationRoot, 'package.json'), 'utf8'),
   ) as { version: string; homepage?: string; bugs?: { url?: string } };
+  // The installed package's own name (and alias, if any), never a fixed one:
+  // forks publish under other names.
+  const npmInstallation = readNpmPackageInstallation(applicationRoot);
   const packageMetadata: CliPackageMetadata = {
     version: packageMetadataJson.version,
     homepage: packageMetadataJson.homepage,
     bugsUrl: packageMetadataJson.bugs?.url,
+    updateCommand: npmInstallation.globalInstallCommand,
   };
   const fileSystem = {
     pathExists: (filePath: string) => fs.existsSync(filePath),
@@ -41,6 +45,7 @@ export function createCliApplication(): CliApplication {
   const homeDirectory = os.homedir();
   const sandboxService = createSandboxCommandService({
     homeDirectory,
+    globalInstallCommand: `npm install -g ${npmInstallation.packageName}`,
     fileSystem,
     output,
     runSandboxCommand: (argumentsList, inheritOutput = false) => {
@@ -74,12 +79,13 @@ export function createCliApplication(): CliApplication {
       // before this best-effort npm registry check runs.
       await new Promise<void>((resolve) => setImmediate(resolve));
       return execSync(
-        'npm show @cloudcli-ai/cloudcli version',
+        `npm show ${npmInstallation.packageName} version`,
         { encoding: 'utf8' },
       ).trim();
     },
     updateGlobalPackage: () => {
-      execSync('npm update -g @cloudcli-ai/cloudcli', { stdio: 'inherit' });
+      // `npm install` rather than `npm update`: only the former keeps an alias.
+      execSync(npmInstallation.globalInstallCommand, { stdio: 'inherit' });
     },
     startServer: async () => {
       // The server executable is an entrypoint rather than a feature module,

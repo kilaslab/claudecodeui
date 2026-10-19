@@ -9,6 +9,8 @@ type SystemUpdateDependencies = {
   homeDirectory: string;
   installMode: 'git' | 'npm';
   isPlatform: boolean;
+  /** Replaces a global npm installation in place, alias included. */
+  npmUpdateCommand: string;
   environment: NodeJS.ProcessEnv;
   runShellCommand(
     command: string,
@@ -32,8 +34,9 @@ export function createSystemUpdateService(dependencies: SystemUpdateDependencies
       const updateCommand = dependencies.isPlatform
         ? 'npm run update:platform'
         : dependencies.installMode === 'git'
-          ? 'git checkout main && git pull && npm install'
-          : 'npm install -g @cloudcli-ai/cloudcli@latest';
+          // This fork releases from `kilas`; its `main` only mirrors upstream.
+          ? 'git checkout kilas && git pull && npm install'
+          : dependencies.npmUpdateCommand;
       const workingDirectory = dependencies.isPlatform || dependencies.installMode === 'git'
         ? dependencies.appRoot
         : dependencies.homeDirectory;
