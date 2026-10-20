@@ -91,6 +91,10 @@ export function useSlashCommands({
   const [slashPosition, setSlashPosition] = useState(-1);
 
   const commandQueryTimerRef = useRef<number | null>(null);
+  // What has been typed after the slash so far. `commandQuery` only follows it
+  // after the debounce, so a key pressed inside that window reads this instead
+  // of filtering the stale menu.
+  const typedCommandQueryRef = useRef('');
 
   const clearCommandQueryTimer = useCallback(() => {
     if (commandQueryTimerRef.current !== null) {
@@ -100,6 +104,7 @@ export function useSlashCommands({
   }, []);
 
   const resetCommandMenuState = useCallback(() => {
+    typedCommandQueryRef.current = '';
     setShowCommandMenu(false);
     setSlashPosition(-1);
     setCommandQuery('');
@@ -245,6 +250,7 @@ export function useSlashCommands({
 
   const handleToggleCommandMenu = useCallback(() => {
     const isOpening = !showCommandMenu;
+    typedCommandQueryRef.current = '';
     setShowCommandMenu(isOpening);
     setCommandQuery('');
     setSelectedCommandIndex(-1);
@@ -288,9 +294,12 @@ export function useSlashCommands({
       setSlashPosition(slashPos);
       setShowCommandMenu(true);
       setSelectedCommandIndex(-1);
+      typedCommandQueryRef.current = query;
 
       clearCommandQueryTimer();
       commandQueryTimerRef.current = window.setTimeout(() => {
+        // The filter has caught up with the typing: no key is inside the window now.
+        commandQueryTimerRef.current = null;
         setCommandQuery(query);
       }, COMMAND_QUERY_DEBOUNCE_MS);
     },
@@ -329,10 +338,23 @@ export function useSlashCommands({
       }
 
       if (event.key === 'Tab' || event.key === 'Enter') {
+        // A key inside the filter debounce acts on what is typed now: the menu
+        // on screen still lists every command, most-used first.
+        const isFilterPending = commandQueryTimerRef.current !== null;
+        const hasHighlight = selectedCommandIndex >= 0;
+        const candidates = isFilterPending
+          ? filterSlashCommands(slashCommands, typedCommandQueryRef.current)
+          : filteredCommands;
+        if (isFilterPending && !hasHighlight && candidates.length === 0) {
+          // Nothing typed so far is a command; Enter sends it as an ordinary message.
+          return false;
+        }
+
         event.preventDefault();
         // Until the user arrows through the menu nothing is highlighted, so both
-        // keys act on the first match — the entry the menu renders at the top.
-        const targetCommand = filteredCommands[selectedCommandIndex >= 0 ? selectedCommandIndex : 0];
+        // keys act on the first match. A highlight is the entry the user saw on
+        // screen, so it indexes the menu as drawn; typing resets it.
+        const targetCommand = hasHighlight ? filteredCommands[selectedCommandIndex] : candidates[0];
         if (!targetCommand) {
           return true;
         }
@@ -359,6 +381,7 @@ export function useSlashCommands({
     [
       showCommandMenu,
       filteredCommands,
+      slashCommands,
       insertCommandIntoInput,
       resetCommandMenuState,
       selectCommandFromKeyboard,
