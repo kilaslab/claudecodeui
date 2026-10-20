@@ -42,6 +42,11 @@ type ProviderCapabilities = {
    * Whether a session's transcript can be branched into an independent one.
    */
   supportsSessionForking: boolean;
+  /**
+   * Whether the runtime can summarize a conversation to free up context on
+   * request: the Claude CLI's `/compact`, sent as an ordinary message.
+   */
+  supportsCompaction: boolean;
 };
 
 /**
@@ -66,6 +71,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // `forkSession` copies a transcript prefix into a new session file.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    supportsCompaction: true,
   },
   cursor: {
     provider: 'cursor',
@@ -80,6 +86,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     effortLevels: [],
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsCompaction: false,
   },
   codex: {
     provider: 'codex',
@@ -98,6 +105,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     // which is how Codex's own IDE clients do it.
     supportsMessageEditing: true,
     supportsSessionForking: true,
+    supportsCompaction: false,
   },
   opencode: {
     provider: 'opencode',
@@ -117,13 +125,16 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     effortLevels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'],
     supportsMessageEditing: false,
     supportsSessionForking: false,
+    supportsCompaction: false,
   },
 };
 
 /**
  * Application service exposing the provider capability matrix. Used by the
- * Providers routes (the capabilities endpoints) and by the Providers model
- * service, which reads `effortLevels` to validate custom-model effort.
+ * Providers routes (the capabilities endpoints), by the Providers model
+ * service, which reads `effortLevels` to validate custom-model effort, and, via
+ * the providers barrel, by the Commands module, which offers `/compact` only
+ * where `supportsCompaction` holds.
  */
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {

@@ -10,6 +10,8 @@ type CommandsRouterDependencies = {
   homeDirectory(): string;
   appRoot: string;
   models: typeof import('../providers/index.js').providerModelsService;
+  /** Whether a provider's runtime can compact a conversation; decides who is offered `/compact`. */
+  supportsCompaction?(provider: string): boolean;
   runtime: {
     uptime(): number;
     memoryUsage(): NodeJS.MemoryUsage;
@@ -221,7 +223,23 @@ const builtInCommands = [
     namespace: "builtin",
     metadata: { type: "builtin" },
   },
+  {
+    name: "/compact",
+    description: "Summarize the conversation to free up context",
+    namespace: "builtin",
+    metadata: { type: "builtin", requiresCompaction: true },
+  },
 ];
+
+/**
+ * The built-ins offered to one provider. A client that names no provider gets
+ * every one; a provider that cannot compact does not get `/compact`.
+ */
+const builtInCommandsFor = (provider) =>
+  builtInCommands.filter((command) =>
+    !command.metadata.requiresCompaction
+    || typeof provider !== "string"
+    || Boolean(dependencies.supportsCompaction?.(provider)));
 
 /**
  * Built-in command handlers
@@ -229,11 +247,13 @@ const builtInCommands = [
  */
 const builtInHandlers = {
   "/help": async (args, context) => {
+    // Only what this provider can run: `/compact` is the Claude CLI's.
+    const helpCommands = builtInCommandsFor(context?.provider);
     const helpText = `# Claude Code Commands
 
 ## Built-in Commands
 
-${builtInCommands
+${helpCommands
   .map(
     (cmd) => `### ${cmd.name}
 ${cmd.description}
@@ -266,7 +286,7 @@ Custom commands can be created in:
       data: {
         content: helpText,
         format: "markdown",
-        commands: builtInCommands.map((command) => ({
+        commands: helpCommands.map((command) => ({
           name: command.name,
           description: command.description,
           namespace: command.namespace,
@@ -276,6 +296,19 @@ Custom commands can be created in:
   },
 
   "/models": (args, context) => executeModelsCommand(args, context, providerModelsService),
+
+  // Compaction itself is the CLI's: the client sends `/compact [instructions]`
+  // as an ordinary message once told to (see compactConversation).
+  "/compact": async (args, context, rawArgs) => {
+    if (typeof context?.provider === "string" && !dependencies.supportsCompaction?.(context.provider)) {
+      throw new Error("This provider cannot compact a conversation.");
+    }
+    return {
+      type: "builtin",
+      action: "compact",
+      data: { instructions: typeof rawArgs === "string" ? rawArgs.trim() : args.join(" ") },
+    };
+  },
 
   "/cost": async (args, context) => {
     const tokenUsage = context?.tokenUsage || {};
@@ -462,8 +495,9 @@ Custom commands can be created in:
  */
 router.post("/list", async (req, res) => {
   try {
-    const { projectPath } = req.body;
-    const allCommands = [...builtInCommands];
+    const { projectPath, provider } = req.body;
+    const providerBuiltIns = builtInCommandsFor(provider);
+    const allCommands = [...providerBuiltIns];
 
     // Scan project-level commands (.claude/commands/)
     if (projectPath) {
@@ -495,7 +529,7 @@ router.post("/list", async (req, res) => {
     customCommands.sort((a, b) => a.name.localeCompare(b.name));
 
     res.json({
-      builtIn: builtInCommands,
+      builtIn: providerBuiltIns,
       custom: customCommands,
       count: allCommands.length,
     });
@@ -534,7 +568,7 @@ router.post("/execute", async (req, res) => {
     const handler = builtInHandlers[commandName];
     if (handler) {
       try {
-        const result = await handler(args, context);
+        const result = await handler(args, context, rawArgs);
         return res.json({
           ...result,
           command: commandName,
