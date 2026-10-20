@@ -1,6 +1,6 @@
 {
   "name": "@kilaslab/agent-console",
-  "version": "1.37.5-kilas.1",
+  "version": "1.37.5-kilas.2",
   "productName": "CloudCLI",
   "description": "Agent Console: a web UI for Claude Code and other coding agents, a modified version of CloudCLI UI (https://github.com/siteboon/claudecodeui)",
   "type": "module",
