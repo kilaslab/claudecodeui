@@ -80,7 +80,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
-        themeColorMeta.setAttribute('content', '#141414'); // Dark background color (hsl(0 0% 8%))
+        themeColorMeta.setAttribute('content', '#0e0e0e'); // Dark background color (hsl(0 0% 5.5%))
       }
     } else {
       document.documentElement.classList.remove('dark');
@@ -93,7 +93,7 @@ export const ThemeProvider = ({ children }: { children: ReactNode }) => {
 
       const themeColorMeta = document.querySelector('meta[name="theme-color"]');
       if (themeColorMeta) {
-        themeColorMeta.setAttribute('content', '#f6f4ef'); // Light background color (warm cream)
+        themeColorMeta.setAttribute('content', '#fcfcfc'); // Light background color (hsl(0 0% 98.8%))
       }
     }
   }, [isDarkMode]);

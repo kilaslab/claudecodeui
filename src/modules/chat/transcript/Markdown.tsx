@@ -114,7 +114,7 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
   }
 
   return (
-    <div className="group my-3 overflow-hidden rounded-xl border border-border bg-muted/50 shadow-sm dark:bg-zinc-900">
+    <div className="group my-3 overflow-hidden rounded-xl border border-border bg-muted/50 shadow-sm">
       {/* Label row shares the block's background — no divider, ChatGPT-style */}
       <div className="flex items-center justify-between px-4 pt-2">
         <span className="select-none text-xs text-muted-foreground">{languageLabel}</span>
@@ -175,7 +175,7 @@ const CodeBlock = ({ node: _node, className, children, forceBlock, ...props }: C
         codeTagProps={{
           style: {
             fontFamily:
-              'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+              '"JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
             background: 'transparent',
           },
         }}

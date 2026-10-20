@@ -15,8 +15,51 @@ export default {
     },
     extend: {
       fontFamily: {
-        sans: ['"Encode Sans"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
-        serif: ['Merriweather', 'Georgia', 'Cambria', '"Times New Roman"', 'serif'],
+        // The system UI font for everything, assistant text included; only code is set apart.
+        sans: ['-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'system-ui', 'Roboto', '"Helvetica Neue"', 'Arial', 'sans-serif'],
+        serif: ['Georgia', 'Cambria', '"Times New Roman"', 'serif'],
+        mono: ['"JetBrains Mono Variable"', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', '"Liberation Mono"', '"Courier New"', 'monospace'],
+      },
+      // Prose follows the theme tokens, so rendered markdown changes with the
+      // theme instead of carrying a grey palette of its own. The invert set
+      // matches: the tokens already flip in dark mode.
+      typography: {
+        DEFAULT: {
+          css: {
+            '--tw-prose-body': 'hsl(var(--foreground) / 0.88)',
+            '--tw-prose-headings': 'hsl(var(--foreground))',
+            '--tw-prose-lead': 'hsl(var(--muted-foreground))',
+            '--tw-prose-links': 'hsl(var(--foreground))',
+            '--tw-prose-bold': 'hsl(var(--foreground))',
+            '--tw-prose-counters': 'hsl(var(--muted-foreground))',
+            '--tw-prose-bullets': 'hsl(var(--muted-foreground) / 0.6)',
+            '--tw-prose-hr': 'hsl(var(--border))',
+            '--tw-prose-quotes': 'hsl(var(--foreground))',
+            '--tw-prose-quote-borders': 'hsl(var(--border))',
+            '--tw-prose-captions': 'hsl(var(--muted-foreground))',
+            '--tw-prose-code': 'hsl(var(--foreground))',
+            '--tw-prose-pre-code': 'hsl(var(--foreground))',
+            '--tw-prose-pre-bg': 'hsl(var(--muted))',
+            '--tw-prose-th-borders': 'hsl(var(--border))',
+            '--tw-prose-td-borders': 'hsl(var(--border))',
+            '--tw-prose-invert-body': 'hsl(var(--foreground) / 0.88)',
+            '--tw-prose-invert-headings': 'hsl(var(--foreground))',
+            '--tw-prose-invert-lead': 'hsl(var(--muted-foreground))',
+            '--tw-prose-invert-links': 'hsl(var(--foreground))',
+            '--tw-prose-invert-bold': 'hsl(var(--foreground))',
+            '--tw-prose-invert-counters': 'hsl(var(--muted-foreground))',
+            '--tw-prose-invert-bullets': 'hsl(var(--muted-foreground) / 0.6)',
+            '--tw-prose-invert-hr': 'hsl(var(--border))',
+            '--tw-prose-invert-quotes': 'hsl(var(--foreground))',
+            '--tw-prose-invert-quote-borders': 'hsl(var(--border))',
+            '--tw-prose-invert-captions': 'hsl(var(--muted-foreground))',
+            '--tw-prose-invert-code': 'hsl(var(--foreground))',
+            '--tw-prose-invert-pre-code': 'hsl(var(--foreground))',
+            '--tw-prose-invert-pre-bg': 'hsl(var(--muted))',
+            '--tw-prose-invert-th-borders': 'hsl(var(--border))',
+            '--tw-prose-invert-td-borders': 'hsl(var(--border))',
+          },
+        },
       },
       colors: {
         border: "hsl(var(--border))",

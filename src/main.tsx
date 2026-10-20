@@ -4,6 +4,7 @@ import { scan } from 'react-scan'
 
 import App from '@/App'
 import AppErrorBoundary from '@/shared/ui/AppErrorBoundary'
+import '@fontsource-variable/jetbrains-mono'
 import '@/index.css'
 import 'katex/dist/katex.min.css'
 

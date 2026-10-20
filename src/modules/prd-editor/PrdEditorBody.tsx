@@ -29,7 +29,7 @@ export default function PrdEditorBody({
 
   if (previewMode) {
     return (
-      <div className="prose prose-gray h-full max-w-none overflow-y-auto p-6 dark:prose-invert">
+      <div className="prose h-full max-w-none overflow-y-auto p-6 dark:prose-invert">
         <MarkdownPreview content={content} />
       </div>
     );
