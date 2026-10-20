@@ -51,6 +51,10 @@ const pendingToolApprovals = new Map();
 // terminal `complete` (aborted: true) to the client, so the run loop must not
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
+// How many times each session has been aborted. A message waiting to be handed
+// to a held process compares it before and after, to tell Stop from a process
+// that simply went away.
+const abortGenerations = new Map();
 // Query instances interrupted because a newer run took over their session id
 // (see addSession). Their run loops must stay silent on wind-down: the map
 // entry, the abort flag, and all client-facing events belong to the new run.
@@ -220,6 +224,9 @@ const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode'])
 // `canUseTool`. Interaction-required tools reach the owner in these modes only
 // through the PreToolUse hook registered in queryClaudeSDK.
 const MODES_SKIPPING_CAN_USE_TOOL = new Set(['auto', 'bypassPermissions']);
+// The composer modes an approved plan can hand the run to. `plan` itself and
+// `dontAsk` are not offered by the composer, so they are never a way out.
+const PLAN_RETURN_MODES = new Set(['default', 'acceptEdits', 'auto', 'bypassPermissions']);
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
 // effort with standing dynamic-workflow orchestration, and the CLI only honours it when
@@ -478,8 +485,15 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Object} writer - WebSocket writer for reconnect support
  * @param {Function} releaseInput - Closes the held stdin stream so the CLI can exit
  * @param {Function} [pushInput] - Pushes a steered message onto the held stdin stream
+ * @param {Object} [held] - What a later message needs to continue this process instead of replacing it
+ * @param {Function} held.continueTurn - Hands the run to a new writer and starts a turn's bookkeeping over; returns the turn's `ended` promise and an `undo`
+ * @param {string|null|undefined} held.permissionMode - Permission mode the process runs in; null when it is not known
+ * @param {string|undefined} held.modelFlag - Model the process runs
+ * @param {() => boolean} held.isInputOpen - Whether the process still reads stdin
+ * @param {(mode: string|undefined) => void} held.setPlanReturnMode - Records where an approved plan hands the run on
+ * @param {boolean} held.hasInteractionHook - Whether AskUserQuestion/ExitPlanMode reach the owner through a PreToolUse hook, which any mode needs once the process is switched to one that skips `canUseTool`
  */
-function addSession(sessionId, queryInstance, writer = null, releaseInput = null, pushInput = null) {
+function addSession(sessionId, queryInstance, writer = null, releaseInput = null, pushInput = null, held = null) {
   const existing = activeSessions.get(sessionId);
   // A different live instance under the same key means an earlier run was
   // superseded without being stopped (e.g. an abort that raced run setup and
@@ -520,6 +534,9 @@ function addSession(sessionId, queryInstance, writer = null, releaseInput = null
     // Same re-registration as releaseInput; lets steerClaudeSDKSession push a
     // message onto this run's held stdin stream.
     pushInput: pushInput || carried?.pushInput || null,
+    // Same re-registration as pushInput: a later message continues this
+    // process through it (see continueHeldSession).
+    held: held || carried?.held || null,
     // Whether this run's turn has already sent its terminal `complete` (set
     // by the `result` handling in `queryClaudeSDK`). Carried like the other
     // fields above ONLY across a same-instance re-registration (the provider
@@ -682,19 +699,21 @@ function settlesWithin(promise, ms) {
  * open — after release the SDK would drop the request — and a process that
  * still has not finished is closed outright, and given a few seconds to exit.
  * @param {string} sessionId - Session identifier
- * @returns {Promise<boolean>} true when the held process was interrupted or
- *   closed here, so the release need not interrupt it again
+ * @returns {Promise<'idle'|'finished'|'interrupted'|'closed'>} `idle` when no
+ *   turn was running, `finished` when it ended by itself, `interrupted` when
+ *   the wait ran out and the interrupt ended it (the process is still alive),
+ *   `closed` when the process had to be closed
  */
-async function waitForHeldTurn(sessionId) {
+async function waitForHeldTurnOutcome(sessionId) {
   const turn = heldTurns.get(sessionId);
   if (!turn) {
-    return false;
+    return 'idle';
   }
   const waitMs = readHeldTurnWaitMs();
   console.log(`[Claude SDK] Session ${sessionId}: held process is mid-turn; waiting up to ${waitMs} ms for it to finish`);
   if (await settlesWithin(turn.ended, waitMs)) {
     console.log(`[Claude SDK] Session ${sessionId}: held turn finished; taking the session over`);
-    return false;
+    return 'finished';
   }
 
   console.warn(`[Claude SDK] Session ${sessionId}: held turn still running after ${waitMs} ms; interrupting it`);
@@ -705,7 +724,7 @@ async function waitForHeldTurn(sessionId) {
   }
   if (await settlesWithin(turn.ended, Math.min(HELD_TURN_INTERRUPT_GRACE_MS, waitMs))) {
     console.warn(`[Claude SDK] Session ${sessionId}: interrupted held turn finished; taking the session over`);
-    return true;
+    return 'interrupted';
   }
 
   console.warn(`[Claude SDK] Session ${sessionId}: interrupted held turn did not finish; closing its process`);
@@ -721,7 +740,19 @@ async function waitForHeldTurn(sessionId) {
     console.warn(`[Claude SDK] Session ${sessionId}: closed held process has not exited after ${HELD_PROCESS_EXIT_GRACE_MS} ms; taking the session over anyway`);
   }
   endHeldTurn(sessionId, turn.instance);
-  return true;
+  return 'closed';
+}
+
+/**
+ * Waits for a held process that is mid-turn to finish that turn (see
+ * waitForHeldTurnOutcome).
+ * @param {string} sessionId - Session identifier
+ * @returns {Promise<boolean>} true when the held process was interrupted or
+ *   closed here, so the release need not interrupt it again
+ */
+async function waitForHeldTurn(sessionId) {
+  const outcome = await waitForHeldTurnOutcome(sessionId);
+  return outcome === 'interrupted' || outcome === 'closed';
 }
 
 /**
@@ -972,6 +1003,27 @@ function buildTokenBudget(messageUsage, reportedContextWindow) {
       output: outputTokens,
     },
   };
+}
+
+/**
+ * The context a compaction left behind, as a token budget.
+ *
+ * No assistant message states it: the compact boundary carries `post_tokens`,
+ * and the next request's usage only arrives with the next answer. Without
+ * this the meter keeps the size from before the compaction.
+ * @param {Object} message - SDK stream message
+ * @param {number|null} [reportedContextWindow] - SDK-reported window for the session's model
+ * @returns {TokenBudget|null} The budget, or null for any other message
+ */
+function extractCompactionTokenBudget(message, reportedContextWindow) {
+  if (message?.type !== 'system' || message.subtype !== 'compact_boundary') {
+    return null;
+  }
+  const metadata = message.compact_metadata ?? message.compactMetadata ?? {};
+  const postTokens = readNumber(metadata.post_tokens ?? metadata.postTokens);
+  return postTokens > 0
+    ? buildTokenBudget({ input_tokens: postTokens, output_tokens: 0 }, reportedContextWindow)
+    : null;
 }
 
 /**
@@ -1349,8 +1401,8 @@ async function buildPromptMessages(command, images, files, cwd) {
  * ends before it gets the chance, runs the pushed record as a turn of its own.
  *
  * @param {Array<Object>} messages - SDKUserMessage records to send
- * @returns {{ stream: AsyncIterable, release: () => void, push: (record: Object) => boolean }}
- *   Stream plus its closer and pusher. `release` is idempotent. `push` returns
+ * @returns {{ stream: AsyncIterable, release: () => void, push: (record: Object) => boolean, isOpen: () => boolean }}
+ *   Stream plus its closer, pusher and open check. `release` is idempotent. `push` returns
  *   false once the stream is closed instead of queuing onto a dead process.
  */
 function createHeldPromptStream(messages) {
@@ -1386,7 +1438,9 @@ function createHeldPromptStream(messages) {
     return true;
   };
 
-  return { stream, release, push };
+  const isOpen = () => !closed;
+
+  return { stream, release, push, isOpen };
 }
 
 /**
@@ -1478,6 +1532,29 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   let mainThreadModel = null;
   let lastSentTokenBudget = null;
 
+  // A message sent while background agents still run belongs to the process
+  // holding them: it takes the message as a turn of its own and the agents
+  // keep working. Anything it cannot take (an edit that rewinds the
+  // conversation, a process that already exited) falls through to a new one.
+  if (sessionKey() && !options.resumeAnchorId && !options.resumeFromScratch) {
+    let continued = null;
+    try {
+      continued = await continueHeldSession(sessionKey(), command, options, ws, context);
+    } catch (error) {
+      // Not a reason to lose the message: it goes the ordinary way instead.
+      console.error(`[Claude SDK] Session ${sessionKey()}: could not continue the held process:`, error?.message || error);
+    }
+    if (continued?.aborted) {
+      // Stop was pressed while the message waited; the abort has already
+      // closed this run, and the message must not start a process of its own.
+      return;
+    }
+    if (continued) {
+      await continued.ended;
+      return;
+    }
+  }
+
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation — but only once
   // that process is between turns: releasing it mid-turn does not stop the
@@ -1500,6 +1577,40 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Never let the hold keep the server process alive on its own.
     idleReleaseTimer.unref?.();
   };
+
+  // Messages the held process was handed after its first turn (see
+  // continueHeldSession) wait here for their turn to end.
+  let turnWaiters = [];
+  const settleTurnWaiters = () => {
+    const waiting = turnWaiters;
+    turnWaiters = [];
+    for (const resolve of waiting) {
+      resolve();
+    }
+  };
+
+  // Starts this loop's per-turn bookkeeping over for a message pushed into the
+  // held process, and sends everything that follows to that message's writer.
+  // `undo` puts the previous turn's state back when the push did not happen.
+  const continueTurn = (nextWriter) => {
+    const previous = { ws, turnCompleteSent, explanationSentThisTurn, sawTaskEventThisTurn, backgroundWorkPending };
+    ws = nextWriter;
+    turnCompleteSent = false;
+    explanationSentThisTurn = false;
+    sawTaskEventThisTurn = false;
+    backgroundWorkPending = false;
+    let resolveEnded;
+    const ended = new Promise((resolve) => { resolveEnded = resolve; });
+    turnWaiters.push(resolveEnded);
+    return {
+      ended,
+      undo: () => {
+        turnWaiters = turnWaiters.filter((resolve) => resolve !== resolveEnded);
+        ({ ws, turnCompleteSent, explanationSentThisTurn, sawTaskEventThisTurn, backgroundWorkPending } = previous);
+      },
+    };
+  };
+  let heldInfo = null;
 
   // Hoisted above the try so the catch's cleanup can tell whether this run
   // still owns the activeSessions entry (or was superseded by a newer run).
@@ -1552,11 +1663,39 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }]
     };
 
+    // A run started in plan mode has no way back on its own: once the plan is
+    // approved the CLI returns to the mode it started in (`default`), while the
+    // composer shows the mode the user had before planning. The composer says
+    // which one it shows, and the approval carries it to the CLI as a session
+    // permission update. Only a plan mode run has a return mode.
+    let planReturnMode = options.permissionMode === 'plan' && PLAN_RETURN_MODES.has(options.planReturnMode)
+      ? options.planReturnMode
+      : null;
+
+    // One decision per tool use. In a plan mode run that will leave plan for a
+    // mode that skips `canUseTool` the owner is asked from a PreToolUse hook
+    // (the later modes never reach canUseTool), and in plan mode itself the CLI
+    // still calls canUseTool for the same tool use after the hook allows it.
+    const interactionDecisions = new Map();
+    const decideInteraction = (toolName, input, toolUseId, signal) => {
+      if (toolUseId && interactionDecisions.has(toolUseId)) {
+        return interactionDecisions.get(toolUseId);
+      }
+      const decision = requestOwnerApproval(toolName, input, signal);
+      if (toolUseId) {
+        interactionDecisions.set(toolUseId, decision);
+      }
+      return decision;
+    };
+
     sdkOptions.canUseTool = async (toolName, input, context) => {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
 
       if (!requiresInteraction) {
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
+        // The mode the process is in now: a message sent while agents run can
+        // move a held process to another one (see applySendSettings), and the
+        // mode it was launched in then says nothing about what to allow.
+        if ((heldInfo?.permissionMode ?? sdkOptions.permissionMode) === 'bypassPermissions') {
           return { behavior: 'allow', updatedInput: input };
         }
 
@@ -1573,9 +1712,27 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (isAllowed) {
           return { behavior: 'allow', updatedInput: input };
         }
+
+        return requestOwnerApproval(toolName, input, context?.signal);
       }
 
-      return requestOwnerApproval(toolName, input, context?.signal);
+      const decision = await decideInteraction(toolName, input, context?.toolUseID, context?.signal);
+      // A subagent's own plan mode is not the session's: only the main thread's
+      // approved plan hands the run on.
+      if (decision.behavior === 'allow' && toolName === 'ExitPlanMode' && !context?.agentID) {
+        // Where the CLI is once the plan is approved: the mode asked for, or the
+        // one it restores itself, which is not known here.
+        if (heldInfo) {
+          heldInfo.permissionMode = planReturnMode ?? null;
+        }
+        if (planReturnMode) {
+          return {
+            ...decision,
+            updatedPermissions: [{ type: 'setMode', mode: planReturnMode, destination: 'session' }]
+          };
+        }
+      }
+      return decision;
     };
 
     // Asks the owner through the UI and waits for the answer. Interaction-
@@ -1649,15 +1806,15 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // other modes keep `canUseTool` as the only approval path: the CLI still
     // calls it for these tools after a hook's 'allow', so a hook there would
     // ask the owner twice.
-    if (MODES_SKIPPING_CAN_USE_TOOL.has(sdkOptions.permissionMode)) {
+    if (MODES_SKIPPING_CAN_USE_TOOL.has(sdkOptions.permissionMode) || MODES_SKIPPING_CAN_USE_TOOL.has(planReturnMode)) {
       sdkOptions.hooks.PreToolUse = [{
         matcher: [...TOOLS_REQUIRING_INTERACTION].join('|'),
-        hooks: [async (input, _toolUseId, hookOptions) => {
+        hooks: [async (input, toolUseId, hookOptions) => {
           const toolName = input?.tool_name;
           if (!TOOLS_REQUIRING_INTERACTION.has(toolName)) {
             return {};
           }
-          const result = await requestOwnerApproval(toolName, input?.tool_input, hookOptions?.signal);
+          const result = await decideInteraction(toolName, input?.tool_input, toolUseId ?? input?.tool_use_id, hookOptions?.signal);
           return {
             hookSpecificOutput: result.behavior === 'allow'
               ? { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: result.updatedInput }
@@ -1698,6 +1855,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           ...new Set([...(sdkOptions.disallowedTools || []), ...TOOLS_REQUIRING_INTERACTION])
         ];
       }
+      // Likewise a plan must not lead into a mode that answers questions for
+      // the owner: it keeps the mode the run started in, which asks.
+      if (MODES_SKIPPING_CAN_USE_TOOL.has(planReturnMode)) {
+        planReturnMode = null;
+      }
       // Discard the abandoned stream and build a fresh one for the retry.
       heldPrompt.release();
       heldPrompt = createHeldPromptStream(promptMessages);
@@ -1708,9 +1870,29 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       });
     }
 
+    // What a later message needs to continue this process instead of replacing
+    // it. Built once the hook question is settled: the interaction hook is what
+    // makes a switch to a mode that skips `canUseTool` safe.
+    heldInfo = {
+      continueTurn,
+      // The mode the process runs in now; null when it is not known (a plan was
+      // approved and the CLI went back to the mode it keeps itself).
+      permissionMode: sdkOptions.permissionMode ?? 'default',
+      hasInteractionHook: Boolean(sdkOptions.hooks?.PreToolUse),
+      modelFlag: sdkOptions.model,
+      isInputOpen: () => heldPrompt.isOpen(),
+      // A message that puts the process into plan mode names its own way out.
+      setPlanReturnMode: (mode) => {
+        planReturnMode = PLAN_RETURN_MODES.has(mode)
+          && (!MODES_SKIPPING_CAN_USE_TOOL.has(mode) || Boolean(sdkOptions.hooks?.PreToolUse))
+          ? mode
+          : null;
+      },
+    };
+
     // Track the query instance for abort capability
     if (sessionKey()) {
-      addSession(sessionKey(), queryInstance, ws, releasePromptStream, heldPrompt.push);
+      addSession(sessionKey(), queryInstance, ws, releasePromptStream, heldPrompt.push, heldInfo);
     }
 
     // Process streaming messages
@@ -1720,7 +1902,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(sessionKey(), queryInstance, ws, releasePromptStream, heldPrompt.push);
+        addSession(sessionKey(), queryInstance, ws, releasePromptStream, heldPrompt.push, heldInfo);
 
         // Set session ID on writer
         if (ws.setSessionId && typeof ws.setSessionId === 'function') {
@@ -1754,6 +1936,12 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           explanationSentThisTurn = true;
         }
         ws.send(msg);
+      }
+
+      // The activity indicator reads its label from `status` frames; without
+      // one it says "Thinking…" through a compaction that can run for minutes.
+      if (message.type === 'system' && message.subtype === 'status' && message.status === 'compacting') {
+        ws.send(createNormalizedMessage({ kind: 'status', text: 'Compacting conversation…', canInterrupt: true, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
 
       if (
@@ -1796,7 +1984,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Extract and send token budget updates from assistant usage payloads,
       // falling back to the turn's cumulative bill only for SDK builds that
       // report no per-assistant usage at all.
-      let tokenBudgetData = extractTokenBudget(message, reportedContextWindow)
+      const compactionBudget = extractCompactionTokenBudget(message, reportedContextWindow);
+      if (compactionBudget) {
+        // The turn's `result` bills the summary request, which is not what the
+        // session holds now: its own reading must not replace this one.
+        assistantBudgetSent = true;
+      }
+      let tokenBudgetData = compactionBudget
+        || extractTokenBudget(message, reportedContextWindow)
         || (assistantBudgetSent || drainsEarlierNotification
           ? null
           : extractCumulativeTokenBudget(message, reportedContextWindow));
@@ -1984,6 +2179,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           heldForBackgroundWork = false;
           releasePromptStream();
         }
+        // A message pushed into this process is done once its turn reported
+        // complete (a deferred complete, for an unconfirmed steer, is not yet).
+        if (turnCompleteSent) {
+          settleTurnWaiters();
+        }
       } else if (idleReleaseTimer) {
         // Background activity after the turn — push the countdown back out.
         scheduleRelease();
@@ -2072,6 +2272,176 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     releasePromptStream();
     // A process that exits mid-turn has finished that turn too.
     endHeldTurn(sessionKey(), queryInstance);
+    // And any message still waiting on this process has nothing left to wait for.
+    settleTurnWaiters();
+  }
+}
+
+/**
+ * Whether a message can be handed to the process a session's earlier turn left
+ * held open for its background work, instead of starting a process of its own.
+ * @param {Object|undefined} session - The session's entry in the active sessions map
+ * @returns {boolean}
+ */
+function isHeldForContinuation(session) {
+  return Boolean(
+    session
+    && session.status === 'active'
+    && session.pushInput
+    && session.held?.continueTurn
+    && session.turnCompleted
+    // Stdin ends when the hold is released, well before the process exits; a
+    // message sent to it then would wait for the exit, or be lost.
+    && session.held.isInputOpen?.() !== false
+  );
+}
+
+// How long a control request (permission mode, model) may take before a message
+// stops waiting for it. The SDK answers one almost at once; one that does not
+// is on a process that is not listening.
+const CONTROL_REQUEST_TIMEOUT_MS = 5_000;
+
+/**
+ * Sends a user message into the process that holds a session open for its
+ * background agents, as a turn of its own.
+ *
+ * Starting a new process for the message instead interrupts the held one and
+ * stops every task it still has going (releaseHeldSession): sending "status?"
+ * to a session with reviewers running ended them. The CLI itself lets you type
+ * while background agents run, so the message goes to the same process and the
+ * agents keep working and report back to it.
+ *
+ * Resolves `null` when there is nothing to continue — no held process, its
+ * stdin already closed, or a relay turn that had to be closed — and the caller
+ * starts the turn the ordinary way. Resolves `{ aborted: true }` when Stop was
+ * pressed while the message waited: the abort has already closed its run, and
+ * the message must not start a process of its own. Otherwise resolves once the
+ * pushed turn has been handed over, with a promise for its end.
+ * @param {string} sessionId - App session id
+ * @param {string} command - User prompt
+ * @param {Object} options - Same option shape `queryClaudeSDK` accepts for a turn
+ * @param {Object} nextWriter - Writer of the run this message belongs to
+ * @param {Object} context - Runtime context (model resolution)
+ * @returns {Promise<{ uuid: string, ended: Promise<void> } | { aborted: true } | null>}
+ */
+async function continueHeldSession(sessionId, command, options, nextWriter, context) {
+  const session = getSession(sessionId);
+  if (!isHeldForContinuation(session)) {
+    return null;
+  }
+
+  const generation = abortGenerations.get(sessionId) ?? 0;
+  // After every await: still the same live, accepting process — and if not,
+  // whether that is because the user pressed Stop.
+  const lost = () => ((abortGenerations.get(sessionId) ?? 0) !== generation ? { aborted: true } : null);
+  const stillHere = () => getSession(sessionId) === session && isHeldForContinuation(session);
+
+  const [record] = await buildPromptMessages(command, options.images, options.files, options.cwd);
+  if (!stillHere()) {
+    return lost();
+  }
+
+  // The model the message asks for, resolved as a new process would resolve it.
+  const resolvedModel = await context.resolveResumeModel(sessionId, options.model);
+  const selectedModel = resolvedModel || options.model || CLAUDE_PREDEFINED_MODELS.DEFAULT;
+  const modelFlag = selectedModel === CLAUDE_PREDEFINED_MODELS.DEFAULT
+    ? await resolveClaudeDefaultModelFlag(options.cwd)
+    : selectedModel;
+  if (!stillHere()) {
+    return lost();
+  }
+
+  await applySendSettings(session, sessionId, options, modelFlag, nextWriter);
+  if (!stillHere()) {
+    return lost();
+  }
+
+  // A process mid-turn would fold the message into that turn, and the turn's
+  // own `result` would then end this one before it had run. Between turns the
+  // CLI starts it as a turn of its own. Checked last — a turn can begin during
+  // any of the awaits above — and again after each wait, since another may
+  // follow. A relay that outlasts the wait is interrupted; its process is
+  // still good for the message unless it had to be closed.
+  for (let attempt = 0; attempt < 3 && heldTurns.has(sessionId); attempt += 1) {
+    if (await waitForHeldTurnOutcome(sessionId) === 'closed' || !stillHere()) {
+      return lost();
+    }
+  }
+  if (heldTurns.has(sessionId)) {
+    return null;
+  }
+
+  // No await from here to the push: nothing can change under it.
+  const turn = session.held.continueTurn(nextWriter);
+  session.turnCompleted = false;
+  const uuid = crypto.randomUUID();
+  if (!session.pushInput({ ...record, uuid, origin: { kind: 'human' } })) {
+    // The process closed its stdin between the check and the push.
+    turn.undo();
+    session.turnCompleted = true;
+    return null;
+  }
+  session.writer = nextWriter;
+  return { uuid, ended: turn.ended };
+}
+
+/**
+ * Brings a held process's permission mode and model in line with the message
+ * being sent, as far as a process that is already running can be.
+ *
+ * Not carried over: per-message reasoning effort and tool allow/deny settings,
+ * which the CLI only reads at launch. The next process the session starts has them.
+ *
+ * A mode that skips `canUseTool` is not applied to a process that was started
+ * without the interaction hook: it would answer AskUserQuestion and
+ * ExitPlanMode itself. The process keeps its mode, which asks, and the user is
+ * told in the conversation, since the composer says otherwise. The same goes
+ * for a switch the CLI refuses or does not answer.
+ * @param {Object} session - The session's entry in the active sessions map
+ * @param {string} sessionId - App session id
+ * @param {Object} options - Options of the message being sent
+ * @param {string|undefined} modelFlag - The model flag the message resolves to
+ * @param {Object} writer - Writer of the run the message belongs to, for notices
+ */
+async function applySendSettings(session, sessionId, options, modelFlag, writer) {
+  const instance = session.instance;
+  const held = session.held;
+  const tell = (content) => {
+    writer.send(createNormalizedMessage({ kind: 'error', content, sessionId, provider: 'claude' }));
+  };
+
+  const nextMode = options.permissionMode;
+  if (nextMode && (PLAN_RETURN_MODES.has(nextMode) || nextMode === 'plan')) {
+    if (MODES_SKIPPING_CAN_USE_TOOL.has(nextMode) && !held.hasInteractionHook) {
+      tell(`This session is still running agents under a process that was started to ask before it acts, so it cannot switch to ${nextMode} mode yet. It keeps asking; send the message again once the agents finish.`);
+    } else if (typeof instance?.setPermissionMode === 'function') {
+      // Always sent, not only when the mode looks different: the CLI can leave
+      // the mode this process was launched in on its own (a plan the model
+      // entered or the user approved).
+      try {
+        if (await settlesWithin(Promise.resolve(instance.setPermissionMode(nextMode)), CONTROL_REQUEST_TIMEOUT_MS)) {
+          held.permissionMode = nextMode;
+          if (nextMode === 'plan') {
+            held.setPlanReturnMode?.(options.planReturnMode);
+          }
+        } else {
+          tell(`The running session did not answer the switch to ${nextMode} mode, so it keeps the mode it has.`);
+        }
+      } catch (error) {
+        console.warn(`[Claude SDK] Could not switch held session to ${nextMode} mode:`, error?.message || error);
+        tell(`The running session refused the switch to ${nextMode} mode, so it keeps the mode it has.`);
+      }
+    }
+  }
+
+  if (modelFlag && modelFlag !== held.modelFlag && typeof instance?.setModel === 'function') {
+    try {
+      if (await settlesWithin(Promise.resolve(instance.setModel(modelFlag)), CONTROL_REQUEST_TIMEOUT_MS)) {
+        held.modelFlag = modelFlag;
+      }
+    } catch (error) {
+      console.warn('[Claude SDK] Could not switch held session model:', error?.message || error);
+    }
   }
 }
 
@@ -2168,6 +2538,7 @@ async function abortClaudeSDKSession(sessionId) {
     // Mark before interrupting so the run loop knows not to emit its own
     // terminal complete (the abort handler sends the aborted one).
     abortedSessionIds.add(sessionId);
+    abortGenerations.set(sessionId, (abortGenerations.get(sessionId) ?? 0) + 1);
 
     // Call interrupt() on the query instance
     await session.instance.interrupt();

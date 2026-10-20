@@ -16,7 +16,7 @@ import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.j
  */
 
 type HookCallback = (input: Record<string, unknown>, toolUseId: string | undefined, options: { signal: AbortSignal }) => Promise<Record<string, any>>;
-type CanUseTool = (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal }) => Promise<Record<string, any>>;
+type CanUseTool = (toolName: string, input: Record<string, unknown>, options: { signal: AbortSignal; toolUseID?: string }) => Promise<Record<string, any>>;
 type CapturedOptions = {
   hooks?: { PreToolUse?: Array<{ matcher: string; hooks: HookCallback[] }> };
   canUseTool?: CanUseTool;
@@ -28,7 +28,10 @@ type CapturedOptions = {
  * Starts a turn whose scripted SDK stream stays open until `finish` is called,
  * and returns the options every `createQuery` attempt received.
  */
-async function startTurn(permissionMode: string, { rejectHooks = false, rejectInitialization = false } = {}) {
+async function startTurn(
+  permissionMode: string,
+  { rejectHooks = false, rejectInitialization = false, planReturnMode }: { rejectHooks?: boolean; rejectInitialization?: boolean; planReturnMode?: string } = {},
+) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-interaction-hook-'));
   const sent: NormalizedMessage[] = [];
   const attempts: CapturedOptions[] = [];
@@ -67,7 +70,7 @@ async function startTurn(permissionMode: string, { rejectHooks = false, rejectIn
     },
   };
 
-  const run = queryClaudeSDK('hello', { sessionId: `app-hook-${Math.random()}`, cwd, permissionMode }, { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null } as never, context);
+  const run = queryClaudeSDK('hello', { sessionId: `app-hook-${Math.random()}`, cwd, permissionMode, ...(planReturnMode ? { planReturnMode } : {}) }, { send: (message: NormalizedMessage) => { sent.push(message); }, userId: null } as never, context);
   for (let attempt = 0; attempt < 200 && attempts.length === 0; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
@@ -202,6 +205,112 @@ test('a rejected initialization closes the hooked query and retries without hook
     assert.equal(retry.hooks, undefined);
     assert.ok(retry.disallowedTools?.includes('AskUserQuestion'));
     assert.ok(retry.disallowedTools?.includes('ExitPlanMode'));
+  } finally {
+    await turn.end();
+  }
+});
+
+/**
+ * A plan approved in plan mode hands the run to the mode the composer returns
+ * to (`planReturnMode`). Without it the CLI falls back to the mode the run
+ * started in — `default`, because the run started in plan — so a composer that
+ * shows Auto still asked for approval on every command until the next message.
+ */
+const PLAN = { plan: 'Do it' };
+const setMode = (mode: string) => [{ type: 'setMode', mode, destination: 'session' }];
+
+test('an approved ExitPlanMode moves the run to the mode the composer returns to', async () => {
+  const turn = await startTurn('plan', { planReturnMode: 'acceptEdits' });
+  try {
+    const options = turn.attempts[0];
+    assert.equal(options.hooks?.PreToolUse, undefined, 'acceptEdits still reaches canUseTool, so no hook');
+
+    const pending = options.canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    assert.ok(request?.requestId);
+    resolveToolApproval(request.requestId, { allow: true });
+
+    assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN, updatedPermissions: setMode('acceptEdits') });
+  } finally {
+    await turn.end();
+  }
+});
+
+test('a plan approved on the way to auto asks the owner once, through the hook and canUseTool together', async () => {
+  const turn = await startTurn('plan', { planReturnMode: 'auto' });
+  try {
+    const options = turn.attempts[0];
+    const entry = preToolUseHook(options);
+
+    // What the CLI does for one invocation in plan mode: the PreToolUse hook,
+    // then the permission step, which calls canUseTool for the same tool use.
+    const viaHook = entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: 'ExitPlanMode', tool_input: PLAN }, 'toolu_plan', { signal: new AbortController().signal });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    assert.ok(request?.requestId);
+    resolveToolApproval(request.requestId, { allow: true });
+    assert.equal((await viaHook).hookSpecificOutput?.permissionDecision, 'allow');
+
+    const viaPermissionStep = await options.canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+
+    assert.equal(turn.sent.filter((message) => message.kind === 'permission_request').length, 1, 'asked once');
+    assert.deepEqual(viaPermissionStep, { behavior: 'allow', updatedInput: PLAN, updatedPermissions: setMode('auto') });
+  } finally {
+    await turn.end();
+  }
+});
+
+test('AskUserQuestion after a plan is approved into auto still reaches the owner', async () => {
+  // The CLI stops calling canUseTool once the run is in auto mode, so the
+  // question has to be caught by the hook the plan-mode run registered.
+  const turn = await startTurn('plan', { planReturnMode: 'bypassPermissions' });
+  try {
+    const entry = preToolUseHook(turn.attempts[0]);
+    const question = { questions: [{ question: 'Which database?', options: [{ label: 'SQLite' }] }] };
+    const pending = entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: question }, 'toolu_q', { signal: new AbortController().signal });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    assert.equal(request?.toolName, 'AskUserQuestion');
+    resolveToolApproval(request!.requestId as string, { allow: true, updatedInput: question });
+    assert.equal((await pending).hookSpecificOutput?.permissionDecision, 'allow');
+  } finally {
+    await turn.end();
+  }
+});
+
+test('a plan mode run with no return mode, or a return mode on another mode, keeps the plain allow', async () => {
+  for (const [mode, planReturnMode] of [['plan', undefined], ['default', 'auto']] as const) {
+    const turn = await startTurn(mode, planReturnMode ? { planReturnMode } : {});
+    try {
+      const pending = turn.attempts[0].canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+      const request = turn.sent.find((message) => message.kind === 'permission_request');
+      resolveToolApproval(request!.requestId as string, { allow: true });
+      assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN });
+    } finally {
+      await turn.end();
+    }
+  }
+});
+
+test('a return mode that is not one of the composer modes is ignored', async () => {
+  const turn = await startTurn('plan', { planReturnMode: 'plan' });
+  try {
+    const pending = turn.attempts[0].canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    resolveToolApproval(request!.requestId as string, { allow: true });
+    assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN });
+  } finally {
+    await turn.end();
+  }
+});
+
+test('without hook support a plan is not moved into a mode that would skip the owner', async () => {
+  const turn = await startTurn('plan', { planReturnMode: 'auto', rejectHooks: true });
+  try {
+    const retry = turn.attempts[1];
+    assert.equal(retry.hooks, undefined);
+    const pending = retry.canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    resolveToolApproval(request!.requestId as string, { allow: true });
+    assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN });
   } finally {
     await turn.end();
   }

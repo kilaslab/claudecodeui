@@ -13,6 +13,8 @@ import {
   listClaudeSDKBackgroundWork,
   queryClaudeSDK,
   readHeldTurnWaitMs,
+  resolveToolApproval,
+  steerClaudeSDKSession,
   stopClaudeSDKTask,
 } from '@/modules/providers/list/claude/claude-runtime.provider.js';
 import type { NormalizedMessage, ProviderRuntimeContext } from '@/shared/types.js';
@@ -39,6 +41,16 @@ type Scripted = {
   onInterrupt: (() => void) | null;
   /** Runs when the process is closed, in place of ending the stream at once. */
   onClose: (() => void) | null;
+  /** Every record the run wrote to the process's stdin, in order. */
+  prompts: Array<Record<string, any>>;
+  /** What the run asked of the process through control requests: `permission:<mode>`, `model:<id>`. */
+  controls: string[];
+  /** How many processes the run started. */
+  queries: number;
+  /** The SDK options of the latest process the run started (its `canUseTool`, hooks, mode). */
+  options: Record<string, any> | null;
+  /** Makes `setPermissionMode` fail or hang, as a process that is not listening would. */
+  permissionModeBehaviour: 'ok' | 'reject' | 'hang';
 };
 
 /** A stand-in for the SDK query: yields what the test emits, and reads the held prompt to notice its release. */
@@ -56,11 +68,18 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
     calls: [],
     onInterrupt: null,
     onClose: null,
+    prompts: [],
+    controls: [],
+    queries: 0,
+    options: null,
+    permissionModeBehaviour: 'ok',
   };
 
-  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt }) => {
+  const createQuery: NonNullable<ProviderRuntimeContext['createQuery']> = ({ prompt, options }) => {
+    script.queries += 1;
+    script.options = options as Record<string, any>;
     void (async () => {
-      for await (const _message of prompt) { /* the CLI reads its stdin */ }
+      for await (const message of prompt) { script.prompts.push(message as Record<string, any>); }
       released = true;
       script.calls.push('release');
     })();
@@ -84,6 +103,16 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
       interrupt: async () => { script.calls.push('interrupt'); script.onInterrupt?.(); },
       close: () => { script.calls.push('close'); (script.onClose ?? script.end)(); },
       stopTask: async (taskId: string) => { stopped.push(taskId); },
+      setPermissionMode: async (mode: string) => {
+        if (script.permissionModeBehaviour === 'reject') {
+          throw new Error('mode not allowed');
+        }
+        if (script.permissionModeBehaviour === 'hang') {
+          await new Promise(() => {});
+        }
+        script.controls.push(`permission:${mode}`);
+      },
+      setModel: async (model?: string) => { script.controls.push(`model:${model}`); },
     });
   };
 
@@ -91,7 +120,15 @@ function createScriptedQuery(): { createQuery: NonNullable<ProviderRuntimeContex
 }
 
 async function withRun(
-  runTest: (context: { script: Scripted; sent: NormalizedMessage[]; done: Promise<unknown> }) => Promise<void>,
+  runTest: (context: {
+    script: Scripted;
+    sent: NormalizedMessage[];
+    done: Promise<unknown>;
+    /** Sends another message on the same session, as the websocket does with a fresh run's writer. */
+    sendAgain: (command: string, extraOptions?: Record<string, unknown>) => { sent: NormalizedMessage[]; done: Promise<unknown> };
+  }) => Promise<void>,
+  runOptions: Record<string, unknown> = {},
+  contextOverrides: Partial<ProviderRuntimeContext> = {},
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
   const { createQuery, script } = createScriptedQuery();
@@ -105,11 +142,20 @@ async function withRun(
     normalizeMessage: (raw, sessionId) => sessions.normalizeMessage(raw, sessionId),
     isProviderInstalled: async () => true,
     createQuery,
+    ...contextOverrides,
   };
 
   try {
-    const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd }, writer as never, context);
-    await runTest({ script, sent, done });
+    const done = queryClaudeSDK('hello', { sessionId: SESSION_ID, cwd, ...runOptions }, writer as never, context);
+    const sendAgain = (command: string, extraOptions: Record<string, unknown> = {}) => {
+      const sentAgain: NormalizedMessage[] = [];
+      const nextWriter = { send: (message: NormalizedMessage) => { sentAgain.push(message); }, userId: null };
+      return {
+        sent: sentAgain,
+        done: queryClaudeSDK(command, { sessionId: SESSION_ID, cwd, ...runOptions, ...extraOptions }, nextWriter as never, context),
+      };
+    };
+    await runTest({ script, sent, done, sendAgain });
     script.end();
     await done;
   } finally {
@@ -298,7 +344,8 @@ test('a new turn stops the tasks the held process still has going before letting
     // superseded process would live on next to the new one for as long as
     // the agent runs. The stop has to reach it before stdin ends, because the
     // SDK drops control requests written to an ended stdin.
-    const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: second.createQuery });
+    // (An edit: a plain message would be pushed into the held process instead.)
+    const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd, resumeAnchorId: 'anchor-1' }, writer as never, { ...context, createQuery: second.createQuery });
     await settle();
     assert.deepEqual(first.script.stopped, ['a1'], 'the held process is told to stop its agent');
     assert.equal(first.script.released(), true, 'and is then let go');
@@ -349,7 +396,7 @@ test('a held process is still let go when stopping its tasks throws', async () =
     await waitFor(() => sent.some((message) => message.kind === 'complete'));
     assert.equal(first.script.released(), false, 'the first process is held for its agent');
 
-    const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: second.createQuery });
+    const secondRun = queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd, resumeAnchorId: 'anchor-1' }, writer as never, { ...context, createQuery: second.createQuery });
     await settle();
     assert.equal(first.script.released(), true, 'the held process is let go anyway');
 
@@ -468,7 +515,8 @@ async function withTwoRuns(
     second: ReturnType<typeof createScriptedQuery>;
     sent: NormalizedMessage[];
     startFirst: () => Promise<unknown>;
-    startSecond: () => Promise<unknown>;
+    /** `extra` overrides the run's options; `{ resumeAnchorId: undefined }` makes it a plain message rather than an edit. */
+    startSecond: (extra?: Record<string, unknown>) => Promise<unknown>;
   }) => Promise<void>,
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'claude-runtime-hold-'));
@@ -490,7 +538,10 @@ async function withTwoRuns(
       second,
       sent,
       startFirst: () => queryClaudeSDK('start a job', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: first.createQuery }),
-      startSecond: () => queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd }, writer as never, { ...context, createQuery: second.createQuery }),
+      // An edit rewinds the conversation to an earlier row, so it cannot be
+      // handed to the held process: it takes the session over. (A plain
+      // message is pushed into the held process instead, see the tests below.)
+      startSecond: (extra = {}) => queryClaudeSDK('Continue', { sessionId: SESSION_ID, cwd, resumeAnchorId: 'anchor-1', ...extra }, writer as never, { ...context, createQuery: second.createQuery }),
     });
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -783,4 +834,424 @@ test('the held-turn wait is clamped to what a timer can honour', () => {
       process.env.CLAUDE_HELD_TURN_WAIT_MS = previous;
     }
   }
+});
+
+/**
+ * A message sent while background agents run goes into the process that holds
+ * them, as a turn of its own. Starting a new process instead stopped every
+ * outstanding task first (upstream #1325), which is how sending "status?" to a
+ * session with two reviewers running ended both.
+ */
+const launchBackgroundAgent = (script: Scripted) => {
+  script.emit(init());
+  script.emit(toolUse('toolu_agent', 'Agent', { description: 'Review the diff', prompt: 'Review', run_in_background: true }));
+  script.emit(taskStarted('agent1', 'toolu_agent', 'local_agent'));
+  script.emit(ack('toolu_agent', 'Async agent launched. agentId: agent1', { status: 'async_launched', agentId: 'agent1' }));
+  script.emit(result());
+};
+
+test('a message sent while a background agent runs goes to the held process and stops nothing', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+    assert.equal(sent.filter((message) => message.kind === 'complete').length, 1);
+    assert.equal(script.released(), false);
+
+    const again = sendAgain('status?');
+    await waitFor(() => script.prompts.length === 2);
+
+    assert.equal(script.prompts[1].message.content, 'status?');
+    assert.equal(script.prompts[1].origin?.kind, 'human');
+    assert.deepEqual(script.stopped, [], 'the agent keeps running');
+    assert.equal(script.calls.includes('interrupt'), false);
+    assert.equal(script.calls.includes('release'), false, 'the process is not released');
+    assert.equal(script.calls.includes('close'), false);
+
+    script.emit(assistantText('Both reviewers are still running.'));
+    script.emit(result());
+    await again.done;
+
+    // The pushed turn answers on its own run's writer and reports its own end.
+    assert.ok(again.sent.some((message) => message.kind === 'text' && message.content === 'Both reviewers are still running.'));
+    assert.equal(again.sent.filter((message) => message.kind === 'complete').length, 1);
+    assert.equal(sent.filter((message) => message.kind === 'complete').length, 1, 'the first run is not completed twice');
+    assert.equal(sent.some((message) => message.kind === 'text' && message.content === 'Both reviewers are still running.'), false);
+    // The agent is still outstanding, so the process stays held for it.
+    assert.deepEqual(listClaudeSDKBackgroundWork().map((entry) => entry.tasks.map((task) => task.taskId)), [['agent1']]);
+    assert.equal(script.released(), false);
+  });
+});
+
+test('a pushed turn that was the last thing the process was held for completes on its own result and then releases it', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('anything running?');
+    await waitFor(() => script.prompts.length === 2);
+
+    // The agent reports back: the CLI relays it in a turn of its own, stamped
+    // with the origin the resumed CLI stamps task-notification turns with. That
+    // result is not the end of the pushed message.
+    script.emit(taskNotification('agent1', 'toolu_agent', 'completed'));
+    script.emit(notificationTurnResult());
+    await settle();
+    assert.equal(again.sent.filter((message) => message.kind === 'complete').length, 0, 'the relay does not end the pushed turn');
+    assert.equal(script.released(), false);
+
+    // The pushed message's own turn.
+    script.emit(assistantText('Nothing.'));
+    script.emit(result());
+    await again.done;
+
+    assert.equal(again.sent.filter((message) => message.kind === 'complete').length, 1);
+    await waitFor(() => script.released());
+    assert.deepEqual(script.stopped, []);
+  });
+});
+
+test('a message sent during a relay turn waits for it, then goes to the same process', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    // A second reviewer, so the process stays held after the first one reports.
+    script.emit(toolUse('toolu_agent2', 'Agent', { description: 'Review the tests', prompt: 'Review', run_in_background: true }));
+    script.emit(taskStarted('agent2', 'toolu_agent2', 'local_agent'));
+    script.emit(ack('toolu_agent2', 'Async agent launched. agentId: agent2', { status: 'async_launched', agentId: 'agent2' }));
+    await settle();
+
+    // The first reviewer reports back: the held process starts a turn to relay it.
+    script.emit(taskNotification('agent1', 'toolu_agent', 'completed'));
+    await settle();
+    assert.equal(hasActiveHeldTurn(SESSION_ID), true);
+
+    const again = sendAgain('thanks');
+    await settle();
+    assert.equal(script.prompts.length, 1, 'not pushed while the relay turn is mid-flight');
+
+    script.emit(assistantText('The first review finished.'));
+    script.emit(result());
+    await waitFor(() => script.prompts.length === 2);
+    assert.equal(script.prompts[1].message.content, 'thanks');
+    assert.equal(script.calls.includes('interrupt'), false);
+    assert.deepEqual(script.stopped, []);
+
+    script.emit(assistantText('You are welcome.'));
+    script.emit(result());
+    await again.done;
+    assert.equal(script.released(), false, 'the second reviewer still holds the process');
+  });
+});
+
+test('a message pushed into the held process carries the composer\'s permission mode', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('now edit files', { permissionMode: 'acceptEdits' });
+    await waitFor(() => script.prompts.length === 2);
+    assert.deepEqual(script.controls, ['permission:acceptEdits']);
+
+    script.emit(result());
+    await again.done;
+  });
+});
+
+test('a mode that would skip the owner is not forced onto a process started without the interaction hook', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('go full auto', { permissionMode: 'auto' });
+    await waitFor(() => script.prompts.length === 2);
+    assert.deepEqual(script.controls, [], 'it keeps asking, which is the safe side');
+
+    script.emit(result());
+    await again.done;
+  });
+});
+
+/**
+ * A compaction rewrites the context, and no assistant message states what is
+ * left of it: the boundary does. Without that the meter kept the size from
+ * before the compaction, and the turn's `result` — which bills the summary
+ * request — would have published a bigger figure still.
+ */
+test('a compaction publishes the context it left behind as the token budget', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit({
+      type: 'system', subtype: 'compact_boundary', session_id: NATIVE_ID,
+      compact_metadata: { trigger: 'manual', pre_tokens: 335_000, post_tokens: 10_000, duration_ms: 1_000 },
+    });
+    script.emit({
+      type: 'result', subtype: 'success', session_id: NATIVE_ID, result: '', duration_ms: 1, num_turns: 1,
+      usage: { input_tokens: 340_000, output_tokens: 9_000 },
+    });
+    await settle();
+
+    const budgets = sent
+      .filter((message) => message.kind === 'status' && message.text === 'token_budget')
+      .map((message) => (message as { tokenBudget?: { used?: number } }).tokenBudget?.used);
+    assert.deepEqual(budgets, [10_000]);
+  });
+});
+
+test('a compaction in progress says so on the activity indicator, not only in the transcript', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit({ type: 'system', subtype: 'status', session_id: NATIVE_ID, status: 'compacting' });
+    script.emit(result());
+    await settle();
+
+    const statuses = sent
+      .filter((message) => message.kind === 'status' && message.text !== 'token_budget')
+      .map((message) => (message as { text?: string }).text);
+    assert.deepEqual(statuses, ['Compacting conversation…']);
+  });
+});
+
+/**
+ * What a message pushed into a held process must still get right: the mode the
+ * process is in *now* decides what is allowed, Stop ends a message that is
+ * waiting, a process that has let go of stdin is not waited on, and the pushed
+ * turn ends cleanly however the process does.
+ */
+const launchTwoAgents = (script: Scripted) => {
+  launchBackgroundAgent(script);
+  script.emit(toolUse('toolu_agent2', 'Agent', { description: 'Review the tests', prompt: 'Review', run_in_background: true }));
+  script.emit(taskStarted('agent2', 'toolu_agent2', 'local_agent'));
+  script.emit(ack('toolu_agent2', 'Async agent launched. agentId: agent2', { status: 'async_launched', agentId: 'agent2' }));
+};
+
+test('a mode switched to while agents run is the mode that decides what is allowed', { timeout: 20_000 }, async () => {
+  // Launched with Bypass, so canUseTool used to wave everything through for the
+  // life of the process, whatever the user picked afterwards.
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('now ask me before running anything', { permissionMode: 'default' });
+    await waitFor(() => script.prompts.length === 2);
+    assert.deepEqual(script.controls, ['permission:default']);
+
+    const pending = script.options!.canUseTool('Bash', { command: 'rm -rf build' }, { signal: new AbortController().signal, toolUseID: 'toolu_bash' });
+    const request = again.sent.find((message) => message.kind === 'permission_request');
+    assert.ok(request?.requestId, 'the owner is asked, on the run the message belongs to');
+    resolveToolApproval(request.requestId as string, { allow: true });
+    assert.equal((await pending).behavior, 'allow');
+
+    script.emit(result());
+    await again.done;
+  }, { permissionMode: 'bypassPermissions' });
+});
+
+test('a switch the held process cannot take is said in the conversation, and the message still goes', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    // Launched in the default mode, so it has no interaction hook: Auto would
+    // answer its own questions.
+    const again = sendAgain('go full auto', { permissionMode: 'auto' });
+    await waitFor(() => script.prompts.length === 2);
+
+    assert.deepEqual(script.controls, []);
+    const notice = again.sent.find((message) => message.kind === 'error');
+    assert.match(String(notice?.content), /cannot switch to auto mode/);
+
+    script.emit(result());
+    await again.done;
+  });
+});
+
+test('a switch the process refuses, or never answers, is said too, and does not hold the message up', { timeout: 30_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    script.permissionModeBehaviour = 'reject';
+    const again = sendAgain('plan it', { permissionMode: 'plan' });
+    await waitFor(() => script.prompts.length === 2);
+    assert.match(String(again.sent.find((message) => message.kind === 'error')?.content), /refused the switch to plan mode/);
+
+    script.emit(result());
+    await again.done;
+  });
+});
+
+test('Stop pressed while a message waits for a relay turn ends it, and starts no process of its own', { timeout: 30_000 }, async () => {
+  const previous = process.env.CLAUDE_HELD_TURN_WAIT_MS;
+  process.env.CLAUDE_HELD_TURN_WAIT_MS = '1000';
+  try {
+    await withRun(async ({ script, sendAgain }) => {
+      launchTwoAgents(script);
+      await settle();
+      script.emit(taskNotification('agent1', 'toolu_agent', 'completed'));
+      await settle();
+      assert.equal(hasActiveHeldTurn(SESSION_ID), true);
+
+      const again = sendAgain('thanks');
+      await settle();
+      assert.equal(script.prompts.length, 1, 'waiting for the relay');
+
+      assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+      script.end();
+      await again.done;
+
+      assert.equal(script.queries, 1, 'the cancelled message did not start a process');
+      assert.equal(script.prompts.some((prompt) => prompt.message?.content === 'thanks'), false);
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLAUDE_HELD_TURN_WAIT_MS;
+    } else {
+      process.env.CLAUDE_HELD_TURN_WAIT_MS = previous;
+    }
+  }
+});
+
+test('a relay turn that starts while the message is being prepared is waited for, not pushed into', { timeout: 20_000 }, async () => {
+  let lookups = 0;
+  let releaseModelLookup: () => void = () => {};
+  const modelLookup = new Promise<void>((resolve) => { releaseModelLookup = resolve; });
+  await withRun(async ({ script, sendAgain }) => {
+    launchTwoAgents(script);
+    await settle();
+
+    const again = sendAgain('thanks');
+    await settle();
+    // The agent reports back while the message is still being prepared.
+    script.emit(taskNotification('agent1', 'toolu_agent', 'completed'));
+    await settle();
+    assert.equal(hasActiveHeldTurn(SESSION_ID), true);
+    releaseModelLookup();
+    await settle();
+    assert.equal(script.prompts.length, 1, 'not folded into the relay turn');
+
+    script.emit(assistantText('The first review finished.'));
+    script.emit(notificationTurnResult());
+    await waitFor(() => script.prompts.length === 2);
+    assert.equal(script.prompts[1].message.content, 'thanks');
+
+    script.emit(assistantText('You are welcome.'));
+    script.emit(result());
+    await again.done;
+  }, {}, {
+    resolveResumeModel: async () => {
+      // The first turn's own lookup answers at once; the one made for the
+      // message pushed later waits for the test.
+      lookups += 1;
+      if (lookups > 1) {
+        await modelLookup;
+      }
+      return undefined;
+    },
+  });
+});
+
+test('a process that has let go of stdin is not waited on: the message goes the ordinary way at once', { timeout: 20_000 }, async () => {
+  await withTwoRuns(async ({ first, second, sent, startFirst, startSecond }) => {
+    const firstRun = startFirst();
+    await settle();
+    await holdForBackgroundCommand(first.script, sent);
+    // The user stops the last task: nothing is outstanding, so the hold ends and
+    // stdin is released, though the process has not exited yet.
+    assert.equal(await stopClaudeSDKTask(SESSION_ID, 'b1'), true);
+    first.script.emit(taskNotification('b1', 'toolu_bg', 'stopped'));
+    await waitFor(() => first.script.released());
+
+    // A mode switch on a process that is not reading would never be answered.
+    first.script.permissionModeBehaviour = 'hang';
+    let secondCreated = false;
+    const createSecond = second.createQuery;
+    second.createQuery = (options) => { secondCreated = true; return createSecond(options); };
+    const secondRun = startSecond({ resumeAnchorId: undefined, permissionMode: 'acceptEdits' });
+    await waitFor(() => secondCreated);
+    assert.deepEqual(first.script.controls, [], 'no control request was sent to a process that is not reading');
+
+    first.script.end();
+    await firstRun;
+    second.script.emit(init());
+    second.script.emit(result());
+    second.script.end();
+    await secondRun;
+  });
+});
+
+test('the pushed turn ends with its own complete when the process exits during it', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('status?');
+    await waitFor(() => script.prompts.length === 2);
+    script.end();
+    await again.done;
+
+    assert.equal(again.sent.filter((message) => message.kind === 'complete').length, 1);
+  });
+});
+
+test('Stop during a pushed turn ends it once, on the run it belongs to', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('status?');
+    await waitFor(() => script.prompts.length === 2);
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), true);
+    script.end();
+    await again.done;
+
+    assert.equal(script.queries, 1);
+    assert.ok(again.sent.filter((message) => message.kind === 'complete').length <= 1, 'at most one complete');
+    assert.equal(sent.filter((message) => message.kind === 'complete').length, 1, 'the first run is not completed again');
+  });
+});
+
+test('a steer into a pushed turn defers its complete to the follow-up result', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('status?');
+    await waitFor(() => script.prompts.length === 2);
+    const steered = await steerClaudeSDKSession(SESSION_ID, 'and the tests?');
+    assert.ok(steered?.uuid, 'a pushed turn is steerable');
+    await waitFor(() => script.prompts.length === 3);
+
+    // The CLI never folded the steer, so the first result ends the turn it was
+    // pushed onto and the steer runs as one of its own.
+    script.emit(result());
+    await settle();
+    assert.equal(again.sent.filter((message) => message.kind === 'complete').length, 0);
+
+    script.emit(result());
+    await again.done;
+    assert.equal(again.sent.filter((message) => message.kind === 'complete').length, 1);
+  });
+});
+
+test('two messages in a row each go to the held process, one after the other', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const first = sendAgain('one');
+    await waitFor(() => script.prompts.length === 2);
+    script.emit(assistantText('first answer'));
+    script.emit(result());
+    await first.done;
+
+    const second = sendAgain('two');
+    await waitFor(() => script.prompts.length === 3);
+    script.emit(assistantText('second answer'));
+    script.emit(result());
+    await second.done;
+
+    assert.equal(script.queries, 1, 'one process served all three');
+    assert.deepEqual(script.stopped, []);
+    assert.equal(first.sent.filter((message) => message.kind === 'complete').length, 1);
+    assert.equal(second.sent.filter((message) => message.kind === 'complete').length, 1);
+  });
 });
