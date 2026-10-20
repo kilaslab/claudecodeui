@@ -4,6 +4,7 @@ import path from "path";
 import express from "express";
 
 import { parseFrontMatter } from "../../shared/frontmatter.js";
+import { AppError } from "../../shared/utils.js";
 
 type CommandsRouterDependencies = {
   fileSystem: typeof import('node:fs/promises');
@@ -301,7 +302,10 @@ Custom commands can be created in:
   // as an ordinary message once told to (see compactConversation).
   "/compact": async (args, context, rawArgs) => {
     if (typeof context?.provider === "string" && !dependencies.supportsCompaction?.(context.provider)) {
-      throw new Error("This provider cannot compact a conversation.");
+      throw new AppError("This provider cannot compact a conversation.", {
+        code: "COMPACTION_UNSUPPORTED",
+        statusCode: 400,
+      });
     }
     return {
       type: "builtin",
@@ -578,7 +582,8 @@ router.post("/execute", async (req, res) => {
           `Error executing built-in command ${commandName}:`,
           error,
         );
-        return res.status(500).json({
+        // A command this provider cannot run is the request's fault, not ours.
+        return res.status(error instanceof AppError ? error.statusCode : 500).json({
           error: "Command execution failed",
           message: error.message,
           command: commandName,

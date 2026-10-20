@@ -1057,7 +1057,7 @@ test('a switch the held process cannot take is said in the conversation, and the
 
     assert.deepEqual(script.controls, []);
     const notice = again.sent.find((message) => message.kind === 'error');
-    assert.match(String(notice?.content), /cannot switch to auto mode/);
+    assert.match(String(notice?.content), /instead of switching to auto mode/);
 
     script.emit(result());
     await again.done;
@@ -1254,4 +1254,157 @@ test('two messages in a row each go to the held process, one after the other', {
     assert.equal(first.sent.filter((message) => message.kind === 'complete').length, 1);
     assert.equal(second.sent.filter((message) => message.kind === 'complete').length, 1);
   });
+});
+
+/**
+ * The mode a pushed message moves the held process to is the one a new process
+ * would start in, and an approved plan never brings back a mode the user has
+ * left since.
+ */
+const SKIP_PERMISSIONS = { toolsSettings: { allowedTools: [], disallowedTools: [], skipPermissions: true } };
+
+test('"Skip permissions" moves the held process to bypass, as a new process would start', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    const again = sendAgain('status?', { permissionMode: 'default' });
+    await waitFor(() => script.prompts.length === 2);
+    assert.deepEqual(script.controls, ['permission:bypassPermissions'], 'not downgraded to asking for every command');
+
+    script.emit(result());
+    await again.done;
+  }, SKIP_PERMISSIONS);
+});
+
+/** Approves the ExitPlanMode the main thread (or, with `agentID`, a subagent) calls, and returns canUseTool's answer. */
+const approvePlan = async (script: Scripted, sent: NormalizedMessage[], toolUseID: string, agentID?: string) => {
+  const pending = script.options!.canUseTool(
+    'ExitPlanMode',
+    { plan: 'Do the thing' },
+    { signal: new AbortController().signal, toolUseID, ...(agentID ? { agentID } : {}) },
+  );
+  await waitFor(() => sent.some((message) => message.kind === 'permission_request' && (message as { input?: unknown }).input !== undefined));
+  const request = sent.filter((message) => message.kind === 'permission_request').at(-1);
+  resolveToolApproval(request!.requestId as string, { allow: true });
+  return pending;
+};
+
+test('a plan approved after a message switched the mode returns to that mode, not the one before', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchBackgroundAgent(script);
+    await settle();
+
+    // Planned on the way to Auto, then the user picked Default for the next message.
+    const again = sendAgain('ask me first from now on', { permissionMode: 'default' });
+    await waitFor(() => script.prompts.length === 2);
+
+    // The model plans on its own in the pushed turn; the owner approves.
+    const answer = await approvePlan(script, again.sent, 'toolu_exit_later');
+    assert.deepEqual(answer.updatedPermissions, [{ type: 'setMode', mode: 'default', destination: 'session' }]);
+
+    script.emit(result());
+    await again.done;
+  }, { permissionMode: 'plan', planReturnMode: 'auto' });
+});
+
+test('a subagent\'s approved plan leaves the session\'s mode alone', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await settle();
+
+    const answer = await approvePlan(script, sent, 'toolu_sub_exit', 'agent-7');
+    assert.equal(answer.behavior, 'allow');
+    assert.equal(answer.updatedPermissions, undefined);
+
+    script.emit(result());
+  }, { permissionMode: 'plan', planReturnMode: 'acceptEdits' });
+});
+
+test('the interaction hook outlasts the CLI\'s ten-minute default, and a hook the CLI gave up on asks again', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    await settle();
+
+    const matcher = script.options!.hooks.PreToolUse[0];
+    assert.equal(matcher.timeout, 24 * 60 * 60);
+
+    const giveUp = new AbortController();
+    const hookAnswer = matcher.hooks[0]({ tool_name: 'AskUserQuestion', tool_input: { questions: [] } }, 'toolu_ask', { signal: giveUp.signal });
+    await waitFor(() => sent.some((message) => message.kind === 'permission_request'));
+    giveUp.abort();
+    await hookAnswer;
+    await settle();
+
+    // The CLI goes on without the hook's answer and asks canUseTool for the same tool use.
+    const pending = script.options!.canUseTool('AskUserQuestion', { questions: [] }, { signal: new AbortController().signal, toolUseID: 'toolu_ask' });
+    await waitFor(() => sent.filter((message) => message.kind === 'permission_request').length === 2);
+    const second = sent.filter((message) => message.kind === 'permission_request')[1];
+    resolveToolApproval(second.requestId as string, { allow: true });
+    assert.equal((await pending).behavior, 'allow', 'the owner answers; nobody answered no for them');
+
+    script.emit(result());
+  }, { permissionMode: 'auto' });
+});
+
+test('Stop whose interrupt fails still ends a message waiting for a relay turn', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sendAgain }) => {
+    launchTwoAgents(script);
+    await settle();
+    script.emit(taskNotification('agent1', 'toolu_agent', 'completed'));
+    await settle();
+
+    const again = sendAgain('thanks');
+    await settle();
+    script.onInterrupt = () => { throw new Error('not listening'); };
+    // The websocket completes the run as stopped whatever the runtime says.
+    assert.equal(await abortClaudeSDKSession(SESSION_ID), false);
+    script.onInterrupt = null;
+
+    script.emit(assistantText('The first review finished.'));
+    script.emit(notificationTurnResult());
+    await again.done;
+    assert.equal(script.prompts.some((prompt) => prompt.message?.content === 'thanks'), false, 'not pushed into a run that was stopped');
+  });
+});
+
+test('a compaction that ends clears its label, and one that failed says why', { timeout: 20_000 }, async () => {
+  await withRun(async ({ script, sent }) => {
+    script.emit(init());
+    script.emit({ type: 'system', subtype: 'status', session_id: NATIVE_ID, status: 'compacting' });
+    script.emit({ type: 'system', subtype: 'status', session_id: NATIVE_ID, status: null, compact_result: 'failed', compact_error: 'Conversation too long' });
+    script.emit(result());
+    await settle();
+
+    const statuses = sent
+      .filter((message) => message.kind === 'status' && message.text !== 'token_budget')
+      .map((message) => (message as { text?: string }).text);
+    assert.deepEqual(statuses, ['Compacting conversation…', '']);
+    assert.ok(sent.some((message) => message.kind === 'error' && message.content === 'Compacting the conversation failed: Conversation too long'));
+  });
+});
+
+test('a message sent with the default model switches a held process back to it', { timeout: 20_000 }, async () => {
+  // With ANTHROPIC_MODEL set, "Default" leaves the model flag off.
+  const previous = process.env.ANTHROPIC_MODEL;
+  process.env.ANTHROPIC_MODEL = 'claude-from-env';
+  try {
+    await withRun(async ({ script, sendAgain }) => {
+      launchBackgroundAgent(script);
+      await settle();
+
+      const again = sendAgain('cheaper now', { model: CLAUDE_PREDEFINED_MODELS.DEFAULT });
+      await waitFor(() => script.prompts.length === 2);
+      assert.deepEqual(script.controls, ['model:undefined']);
+
+      script.emit(result());
+      await again.done;
+    }, { model: 'opus' });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ANTHROPIC_MODEL;
+    } else {
+      process.env.ANTHROPIC_MODEL = previous;
+    }
+  }
 });

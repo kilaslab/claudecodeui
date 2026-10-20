@@ -51,10 +51,6 @@ const pendingToolApprovals = new Map();
 // terminal `complete` (aborted: true) to the client, so the run loop must not
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
-// How many times each session has been aborted. A message waiting to be handed
-// to a held process compares it before and after, to tell Stop from a process
-// that simply went away.
-const abortGenerations = new Map();
 // Query instances interrupted because a newer run took over their session id
 // (see addSession). Their run loops must stay silent on wind-down: the map
 // entry, the abort flag, and all client-facing events belong to the new run.
@@ -227,6 +223,35 @@ const MODES_SKIPPING_CAN_USE_TOOL = new Set(['auto', 'bypassPermissions']);
 // The composer modes an approved plan can hand the run to. `plan` itself and
 // `dontAsk` are not offered by the composer, so they are never a way out.
 const PLAN_RETURN_MODES = new Set(['default', 'acceptEdits', 'auto', 'bypassPermissions']);
+// How long the CLI waits for the interaction hook, in seconds. The owner may
+// take as long as they like over a plan or a question, but the CLI's default
+// for a hook is ten minutes, after which it goes on without the answer. Kept
+// well under the 24.8 days a Node timer can hold.
+const INTERACTION_HOOK_TIMEOUT_SECONDS = 24 * 60 * 60;
+
+/**
+ * The mode a turn runs in. "Skip permissions" turns every mode but plan into
+ * bypass, as the launch options do (mapCliOptionsToSDK), so a process that is
+ * already running is moved to the same mode a new one would start in.
+ * @param {string|undefined} mode - The mode the composer shows
+ * @param {Object|undefined} toolsSettings - The message's tool settings
+ * @returns {string|undefined}
+ */
+function effectivePermissionMode(mode, toolsSettings) {
+  return toolsSettings?.skipPermissions && mode !== 'plan' ? 'bypassPermissions' : mode;
+}
+
+/**
+ * The mode a message in plan mode asks to return to once its plan is approved
+ * (the mode the composer showed before plan mode), or null when it names none.
+ * @param {Object} options - Options of the message being sent
+ * @returns {string|null}
+ */
+function planReturnModeOf(options) {
+  return PLAN_RETURN_MODES.has(options.planReturnMode)
+    ? effectivePermissionMode(options.planReturnMode, options.toolsSettings)
+    : null;
+}
 
 // Ultracode is a session-scoped setting rather than an SDK effort level: it pairs xhigh
 // effort with standing dynamic-workflow orchestration, and the CLI only honours it when
@@ -1531,6 +1556,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   let reportedContextWindow = getReportedClaudeContextWindow(providerSessionId) ?? null;
   let mainThreadModel = null;
   let lastSentTokenBudget = null;
+  // Set while the activity label says the conversation is being compacted.
+  let compactionAnnounced = false;
 
   // A message sent while background agents still run belongs to the process
   // holding them: it takes the message as a turn of its own and the agents
@@ -1541,8 +1568,11 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     try {
       continued = await continueHeldSession(sessionKey(), command, options, ws, context);
     } catch (error) {
-      // Not a reason to lose the message: it goes the ordinary way instead.
+      // An error here comes from preparing the message (its attachments, its
+      // model), which a new process would run into as well; going the ordinary
+      // way would only stop the agents first. The run reports it instead.
       console.error(`[Claude SDK] Session ${sessionKey()}: could not continue the held process:`, error?.message || error);
+      throw error;
     }
     if (continued?.aborted) {
       // Stop was pressed while the message waited; the abort has already
@@ -1599,6 +1629,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     explanationSentThisTurn = false;
     sawTaskEventThisTurn = false;
     backgroundWorkPending = false;
+    // The idle countdown measures a quiet hold, not a turn: one waiting on the
+    // owner (a question, a plan) can be quiet for longer than that, and
+    // releasing stdin under it would lose the answer. Its `result` re-arms it.
+    const hadIdleRelease = Boolean(idleReleaseTimer);
+    if (idleReleaseTimer) {
+      clearTimeout(idleReleaseTimer);
+      idleReleaseTimer = null;
+    }
     let resolveEnded;
     const ended = new Promise((resolve) => { resolveEnded = resolve; });
     turnWaiters.push(resolveEnded);
@@ -1607,6 +1645,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       undo: () => {
         turnWaiters = turnWaiters.filter((resolve) => resolve !== resolveEnded);
         ({ ws, turnCompleteSent, explanationSentThisTurn, sawTaskEventThisTurn, backgroundWorkPending } = previous);
+        if (hadIdleRelease) {
+          scheduleRelease();
+        }
       },
     };
   };
@@ -1668,9 +1709,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // composer shows the mode the user had before planning. The composer says
     // which one it shows, and the approval carries it to the CLI as a session
     // permission update. Only a plan mode run has a return mode.
-    let planReturnMode = options.permissionMode === 'plan' && PLAN_RETURN_MODES.has(options.planReturnMode)
-      ? options.planReturnMode
-      : null;
+    let planReturnMode = options.permissionMode === 'plan' ? planReturnModeOf(options) : null;
 
     // One decision per tool use. In a plan mode run that will leave plan for a
     // mode that skips `canUseTool` the owner is asked from a PreToolUse hook
@@ -1684,6 +1723,14 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       const decision = requestOwnerApproval(toolName, input, signal);
       if (toolUseId) {
         interactionDecisions.set(toolUseId, decision);
+        // A hook the CLI gave up on got no answer, only a cancellation: when
+        // the CLI then asks canUseTool for the same tool use, the owner is
+        // asked again instead of being told no on their behalf.
+        void decision.then(() => {
+          if (signal?.aborted && interactionDecisions.get(toolUseId) === decision) {
+            interactionDecisions.delete(toolUseId);
+          }
+        });
       }
       return decision;
     };
@@ -1694,8 +1741,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       if (!requiresInteraction) {
         // The mode the process is in now: a message sent while agents run can
         // move a held process to another one (see applySendSettings), and the
-        // mode it was launched in then says nothing about what to allow.
-        if ((heldInfo?.permissionMode ?? sdkOptions.permissionMode) === 'bypassPermissions') {
+        // mode it was launched in then says nothing about what to allow. A
+        // mode that is not known (null) asks.
+        const currentMode = heldInfo ? heldInfo.permissionMode : sdkOptions.permissionMode;
+        if (currentMode === 'bypassPermissions') {
           return { behavior: 'allow', updatedInput: input };
         }
 
@@ -1809,6 +1858,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     if (MODES_SKIPPING_CAN_USE_TOOL.has(sdkOptions.permissionMode) || MODES_SKIPPING_CAN_USE_TOOL.has(planReturnMode)) {
       sdkOptions.hooks.PreToolUse = [{
         matcher: [...TOOLS_REQUIRING_INTERACTION].join('|'),
+        timeout: INTERACTION_HOOK_TIMEOUT_SECONDS,
         hooks: [async (input, toolUseId, hookOptions) => {
           const toolName = input?.tool_name;
           if (!TOOLS_REQUIRING_INTERACTION.has(toolName)) {
@@ -1881,12 +1931,15 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       hasInteractionHook: Boolean(sdkOptions.hooks?.PreToolUse),
       modelFlag: sdkOptions.model,
       isInputOpen: () => heldPrompt.isOpen(),
-      // A message that puts the process into plan mode names its own way out.
+      // Where an approved plan takes the process: the way out a message into
+      // plan mode names, else the mode a message last moved it to (a plan the
+      // model enters on its own returns there). False when the mode cannot be
+      // one: a mode that skips `canUseTool`, on a process without the hook.
       setPlanReturnMode: (mode) => {
-        planReturnMode = PLAN_RETURN_MODES.has(mode)
-          && (!MODES_SKIPPING_CAN_USE_TOOL.has(mode) || Boolean(sdkOptions.hooks?.PreToolUse))
-          ? mode
-          : null;
+        const accepted = PLAN_RETURN_MODES.has(mode)
+          && (!MODES_SKIPPING_CAN_USE_TOOL.has(mode) || Boolean(sdkOptions.hooks?.PreToolUse));
+        planReturnMode = accepted ? mode : null;
+        return accepted;
       },
     };
 
@@ -1940,8 +1993,24 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
       // The activity indicator reads its label from `status` frames; without
       // one it says "Thinking…" through a compaction that can run for minutes.
-      if (message.type === 'system' && message.subtype === 'status' && message.status === 'compacting') {
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'Compacting conversation…', canInterrupt: true, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      // Once it is over the label goes back to the default (an empty status
+      // clears it), and a compaction that failed says why.
+      if (message.type === 'system' && message.subtype === 'status') {
+        if (message.status === 'compacting') {
+          compactionAnnounced = true;
+          ws.send(createNormalizedMessage({ kind: 'status', text: 'Compacting conversation…', canInterrupt: true, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        } else if (compactionAnnounced) {
+          compactionAnnounced = false;
+          ws.send(createNormalizedMessage({ kind: 'status', text: '', canInterrupt: true, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+          if (message.compact_result === 'failed') {
+            ws.send(createNormalizedMessage({
+              kind: 'error',
+              content: `Compacting the conversation failed${message.compact_error ? `: ${message.compact_error}` : '.'}`,
+              sessionId: capturedSessionId || sessionId || null,
+              provider: 'claude',
+            }));
+          }
+        }
       }
 
       if (
@@ -2330,14 +2399,15 @@ async function continueHeldSession(sessionId, command, options, nextWriter, cont
     return null;
   }
 
-  const generation = abortGenerations.get(sessionId) ?? 0;
-  // After every await: still the same live, accepting process — and if not,
-  // whether that is because the user pressed Stop.
-  const lost = () => ((abortGenerations.get(sessionId) ?? 0) !== generation ? { aborted: true } : null);
+  const generation = session.abortGeneration ?? 0;
+  // Checked after every await. Stop pressed meanwhile ends the message, even a
+  // Stop whose interrupt failed and left the process up; otherwise a process
+  // that is no longer the same live, accepting one sends it the ordinary way.
+  const lost = () => ((session.abortGeneration ?? 0) !== generation ? { aborted: true } : null);
   const stillHere = () => getSession(sessionId) === session && isHeldForContinuation(session);
 
   const [record] = await buildPromptMessages(command, options.images, options.files, options.cwd);
-  if (!stillHere()) {
+  if (lost() || !stillHere()) {
     return lost();
   }
 
@@ -2347,12 +2417,12 @@ async function continueHeldSession(sessionId, command, options, nextWriter, cont
   const modelFlag = selectedModel === CLAUDE_PREDEFINED_MODELS.DEFAULT
     ? await resolveClaudeDefaultModelFlag(options.cwd)
     : selectedModel;
-  if (!stillHere()) {
+  if (lost() || !stillHere()) {
     return lost();
   }
 
   await applySendSettings(session, sessionId, options, modelFlag, nextWriter);
-  if (!stillHere()) {
+  if (lost() || !stillHere()) {
     return lost();
   }
 
@@ -2361,14 +2431,14 @@ async function continueHeldSession(sessionId, command, options, nextWriter, cont
   // CLI starts it as a turn of its own. Checked last — a turn can begin during
   // any of the awaits above — and again after each wait, since another may
   // follow. A relay that outlasts the wait is interrupted; its process is
-  // still good for the message unless it had to be closed.
-  for (let attempt = 0; attempt < 3 && heldTurns.has(sessionId); attempt += 1) {
-    if (await waitForHeldTurnOutcome(sessionId) === 'closed' || !stillHere()) {
+  // still good for the message unless it had to be closed. Each pass waits on
+  // a turn of its own (agents that finish one after another are relayed one
+  // after another), so the loop ends when they stop coming; giving up instead
+  // would hand the message to a new process, which stops the agents still at work.
+  while (heldTurns.has(sessionId)) {
+    if (await waitForHeldTurnOutcome(sessionId) === 'closed' || lost() || !stillHere()) {
       return lost();
     }
-  }
-  if (heldTurns.has(sessionId)) {
-    return null;
   }
 
   // No await from here to the push: nothing can change under it.
@@ -2410,10 +2480,12 @@ async function applySendSettings(session, sessionId, options, modelFlag, writer)
     writer.send(createNormalizedMessage({ kind: 'error', content, sessionId, provider: 'claude' }));
   };
 
-  const nextMode = options.permissionMode;
+  // The mode a new process would start in for this message, "Skip
+  // permissions" included.
+  const nextMode = effectivePermissionMode(options.permissionMode, options.toolsSettings);
   if (nextMode && (PLAN_RETURN_MODES.has(nextMode) || nextMode === 'plan')) {
     if (MODES_SKIPPING_CAN_USE_TOOL.has(nextMode) && !held.hasInteractionHook) {
-      tell(`This session is still running agents under a process that was started to ask before it acts, so it cannot switch to ${nextMode} mode yet. It keeps asking; send the message again once the agents finish.`);
+      tell(`This session's agents are still running in a process that was started to ask before it acts, so it keeps asking for now instead of switching to ${nextMode} mode. Messages sent after the agents finish use ${nextMode} mode.`);
     } else if (typeof instance?.setPermissionMode === 'function') {
       // Always sent, not only when the mode looks different: the CLI can leave
       // the mode this process was launched in on its own (a plan the model
@@ -2421,8 +2493,12 @@ async function applySendSettings(session, sessionId, options, modelFlag, writer)
       try {
         if (await settlesWithin(Promise.resolve(instance.setPermissionMode(nextMode)), CONTROL_REQUEST_TIMEOUT_MS)) {
           held.permissionMode = nextMode;
-          if (nextMode === 'plan') {
-            held.setPlanReturnMode?.(options.planReturnMode);
+          // A plan this message starts returns where the composer says. Any
+          // other mode is where a plan the model starts on its own returns,
+          // so no approval brings back a mode the user has since left.
+          const returnMode = nextMode === 'plan' ? planReturnModeOf(options) : nextMode;
+          if (!held.setPlanReturnMode?.(returnMode) && returnMode) {
+            tell(`This session's agents are still running in a process that was started to ask before it acts, so once the plan is approved it keeps asking instead of switching to ${returnMode} mode.`);
           }
         } else {
           tell(`The running session did not answer the switch to ${nextMode} mode, so it keeps the mode it has.`);
@@ -2434,13 +2510,19 @@ async function applySendSettings(session, sessionId, options, modelFlag, writer)
     }
   }
 
-  if (modelFlag && modelFlag !== held.modelFlag && typeof instance?.setModel === 'function') {
+  // An undefined flag is the CLI's own default, which a process that runs
+  // another model can be switched back to.
+  if (modelFlag !== held.modelFlag && typeof instance?.setModel === 'function') {
+    const modelName = modelFlag ?? 'the default model';
     try {
       if (await settlesWithin(Promise.resolve(instance.setModel(modelFlag)), CONTROL_REQUEST_TIMEOUT_MS)) {
         held.modelFlag = modelFlag;
+      } else {
+        tell(`The running session did not answer the switch to ${modelName}, so it keeps the model it has.`);
       }
     } catch (error) {
       console.warn('[Claude SDK] Could not switch held session model:', error?.message || error);
+      tell(`The running session refused the switch to ${modelName}, so it keeps the model it has.`);
     }
   }
 }
@@ -2538,7 +2620,9 @@ async function abortClaudeSDKSession(sessionId) {
     // Mark before interrupting so the run loop knows not to emit its own
     // terminal complete (the abort handler sends the aborted one).
     abortedSessionIds.add(sessionId);
-    abortGenerations.set(sessionId, (abortGenerations.get(sessionId) ?? 0) + 1);
+    // A message waiting to be handed to this process (continueHeldSession)
+    // compares it before and after, to tell Stop from a process that went away.
+    session.abortGeneration = (session.abortGeneration ?? 0) + 1;
 
     // Call interrupt() on the query instance
     await session.instance.interrupt();

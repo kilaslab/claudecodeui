@@ -162,6 +162,6 @@ test('/help and /compact are for the providers that can compact, and no others',
   assert.ok(listed.includes('/models'));
   assert.equal(JSON.stringify(codexHelp.data).includes('### /compact'), false, 'nor does the help text describe it');
 
-  const refused = await withCommandsServer((post) => post('execute', { commandName: '/compact', context: { provider: 'codex' } }, 500));
+  const refused = await withCommandsServer((post) => post('execute', { commandName: '/compact', context: { provider: 'codex' } }, 400));
   assert.match(String(refused.message), /cannot compact/);
 });
