@@ -97,6 +97,28 @@ function evictRunLater(run: ChatRun): void {
 }
 
 /**
+ * Told, with the session's id, when a run's turn has ended. Used by the
+ * scheduled-messages module to send a queued message the moment the run it
+ * waited for is over, instead of at its next poll.
+ */
+type RunSettledListener = (appSessionId: string) => void;
+
+const runSettledListeners = new Set<RunSettledListener>();
+
+/** Calls every listener after the current event has been recorded and sent. */
+function announceRunSettled(appSessionId: string): void {
+  for (const listener of runSettledListeners) {
+    setImmediate(() => {
+      try {
+        listener(appSessionId);
+      } catch (error) {
+        console.error('[ChatRunRegistry] A run-settled listener failed', error);
+      }
+    });
+  }
+}
+
+/**
  * Decorates one outbound live event for a run and records it in the event log.
  *
  * Responsibilities:
@@ -131,6 +153,11 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.status = 'completed';
     run.completedAt = Date.now();
     evictRunLater(run);
+    // A run that was replaced is followed at once by the one that replaced it,
+    // which the session's queued message must not overtake.
+    if ((message as { replaced?: unknown }).replaced !== true) {
+      announceRunSettled(run.appSessionId);
+    }
   }
 
   run.events.push(outbound);
@@ -186,6 +213,14 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * regardless of which provider runtime produced them.
  */
 export const chatRunRegistry = {
+  /** Calls `listener` after any run's turn ends. Returns the function that stops it. */
+  onRunSettled(listener: RunSettledListener): () => void {
+    runSettledListeners.add(listener);
+    return () => {
+      runSettledListeners.delete(listener);
+    };
+  },
+
   /** Installs the check that keeps a completed run registered while its session still has background work. */
   setRetentionGuard(guard: (appSessionId: string) => boolean): void {
     retainCompletedRun = guard;

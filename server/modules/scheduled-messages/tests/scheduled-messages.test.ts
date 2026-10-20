@@ -5,7 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, scheduledMessagesDb, sessionDraftsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { dispatchDueScheduledMessages, dispatchQueuedMessages } from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
+import {
+  closeScheduledMessageDispatcher,
+  dispatchDueScheduledMessages,
+  dispatchQueuedMessages,
+  initializeScheduledMessageDispatcher,
+} from '@/modules/scheduled-messages/services/scheduled-message-dispatcher.service.js';
 import { scheduledMessagesService } from '@/modules/scheduled-messages/services/scheduled-messages.service.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 
@@ -419,5 +424,90 @@ test('scheduling validates its input', async () => {
       () => scheduledMessagesService.schedule({ ...base, sessionId: 'nope', content: 'hi' }),
       (error: Error & { code?: string }) => error.code === 'SESSION_NOT_FOUND',
     );
+  });
+});
+
+test('a queued message goes out as soon as the run it waited for ends, not at the next poll', async () => {
+  // The poll runs every 30 s, so a message queued during a turn used to wait
+  // up to that long after the turn ended (upstream #1331).
+  await withIsolatedDatabase(async (userId) => {
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, {
+      text: '',
+      queuedMessage: { content: 'send right after this run' },
+    });
+    const run = chatRunRegistry.startRun({
+      appSessionId: SESSION_ID,
+      provider: 'claude',
+      providerSessionId: null,
+      connection: null,
+      userId,
+    });
+
+    const runs: RunCall[] = [];
+    initializeScheduledMessageDispatcher(createRuntime(runs));
+    try {
+      // The catch-up pass at startup finds the session busy and leaves it.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      assert.equal(runs.length, 0);
+
+      run!.writer.sendComplete({ exitCode: 0 });
+
+      for (let attempt = 0; attempt < 100 && runs.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.deepEqual(runs.map((call) => call.command), ['send right after this run']);
+    } finally {
+      closeScheduledMessageDispatcher();
+    }
+  });
+});
+
+test('a long run holding the dispatcher does not hold back another session\'s queued message', async () => {
+  // A pass lasts as long as the runs it starts, and a run that holds its
+  // process for background agents lasts as long as they do.
+  await withIsolatedDatabase(async (userId) => {
+    const OTHER_SESSION = 'other-session';
+    sessionsDb.createAppSession(OTHER_SESSION, 'claude', tmpdir(), 'Other session');
+
+    const runs: RunCall[] = [];
+    const runtime = {
+      hasRuntime: () => true,
+      hasBackgroundWork: () => false,
+      run: async (provider: string, command: string, options: Record<string, unknown>) => {
+        runs.push({ provider, command, options });
+        // The first session's queued run never ends within the test.
+        if (command === 'long one') {
+          await new Promise(() => {});
+        }
+      },
+      abort: async () => true,
+    } as never;
+
+    sessionDraftsDb.saveDraft(userId, SESSION_ID, { text: '', queuedMessage: { content: 'long one' } });
+    initializeScheduledMessageDispatcher(runtime);
+    try {
+      for (let attempt = 0; attempt < 100 && runs.length === 0; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.deepEqual(runs.map((call) => call.command), ['long one']);
+
+      // Another session's turn is running with a message queued behind it.
+      sessionDraftsDb.saveDraft(userId, OTHER_SESSION, { text: '', queuedMessage: { content: 'short one' } });
+      const run = chatRunRegistry.startRun({
+        appSessionId: OTHER_SESSION,
+        provider: 'claude',
+        providerSessionId: null,
+        connection: null,
+        userId,
+      });
+      run!.writer.sendComplete({ exitCode: 0 });
+
+      for (let attempt = 0; attempt < 100 && runs.length < 2; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.deepEqual(runs.map((call) => call.command), ['long one', 'short one']);
+    } finally {
+      closeScheduledMessageDispatcher();
+    }
   });
 });

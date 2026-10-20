@@ -13,6 +13,7 @@ import type { ProviderRuntimeGateway } from '@/modules/websocket/index.js';
 const POLL_INTERVAL_MS = 30_000;
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+let stopListeningForSettledRuns: (() => void) | null = null;
 let dispatchInFlight = false;
 
 type StoredQueuedMessage = {
@@ -86,11 +87,11 @@ async function sendClaimedQueuedMessage(
  *
  * A turn that ends with background work still going (a backgrounded command,
  * agent or workflow) is marked completed, but its CLI process stays open so
- * that work can report back. A new turn replaces that process and stops the
- * work, which is why the composer asks before an interactive send. A queued
- * turn was promised to go "when this finishes", so it waits for that work too —
- * and for the turn in which the held process relays the work's result, which
- * starts only after the last task has settled.
+ * that work can report back. A queued turn was promised to go "when this
+ * finishes", so it waits for that work too — and for the turn in which the held
+ * process relays the work's result, which starts only after the last task has
+ * settled. (An interactive send does not wait: it goes to the held process and
+ * the work keeps running.)
  */
 function isSessionBusy(sessionId: string, runtime: ProviderRuntimeGateway): boolean {
   return chatRunRegistry.isProcessing(sessionId) || runtime.hasBackgroundWork(sessionId);
@@ -186,7 +187,9 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
 
   const poll = () => {
     // A pass that overruns the interval must not be started again underneath
-    // itself; the claim is transactional but the runs are not.
+    // itself; the claim is transactional but the runs are not. (Scheduled
+    // messages go through here: they are sent one after another, and their
+    // runs are awaited.)
     if (dispatchInFlight) {
       return;
     }
@@ -203,6 +206,21 @@ export function initializeScheduledMessageDispatcher(runtime: ProviderRuntimeGat
   };
 
   pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+  // A message queued during a turn is sent when the turn ends, not up to a
+  // poll later: the run registry says when that is. The poll stays as the net
+  // for everything it does not announce — a message queued while nothing ran,
+  // background work that finishes, a restart.
+  //
+  // Not gated on the poll's pass. A pass lasts as long as the runs it starts,
+  // and a run that holds its process for background agents lasts as long as
+  // they do, so waiting for it would hold every other session's message back.
+  // Claiming a queued message is atomic, so passes can overlap safely.
+  stopListeningForSettledRuns = chatRunRegistry.onRunSettled(() => {
+    void dispatchQueuedMessages(runtime).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[ScheduledMessages] Queued dispatch after a run failed', { error: message });
+    });
+  });
   // Never keep the process alive just to poll for scheduled messages.
   pollTimer.unref?.();
 
@@ -215,4 +233,6 @@ export function closeScheduledMessageDispatcher(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  stopListeningForSettledRuns?.();
+  stopListeningForSettledRuns = null;
 }

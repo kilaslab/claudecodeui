@@ -354,3 +354,43 @@ test('startRun rejects a second concurrent run for the same session', async () =
     assert.ok(third);
   });
 });
+
+test('a listener hears once when a run ends, and not for a run that was replaced or after it stops listening', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('app-run-settled', 'claude', '/workspace/demo');
+    const heard: string[] = [];
+    const stop = chatRunRegistry.onRunSettled((sessionId) => { heard.push(sessionId); });
+
+    const start = () => chatRunRegistry.startRun({
+      appSessionId: 'app-run-settled',
+      provider: 'claude',
+      providerSessionId: null,
+      connection: new FakeConnection(),
+      userId: 'user-1',
+    });
+    const settle = () => new Promise((resolve) => { setImmediate(resolve); });
+
+    const first = start();
+    assert.ok(first);
+    first.writer.sendComplete({ exitCode: 0 });
+    // A second complete for the same run (an aborted runtime's own exit) is dropped.
+    first.writer.sendComplete({ exitCode: 1 });
+    await settle();
+    assert.deepEqual(heard, ['app-run-settled']);
+
+    // The one a replacement send ends is followed at once by its replacement:
+    // announcing it would let a queued message overtake it.
+    const second = start();
+    assert.ok(second);
+    chatRunRegistry.completeRun('app-run-settled', { exitCode: 0, aborted: true, replaced: true });
+    await settle();
+    assert.deepEqual(heard, ['app-run-settled']);
+
+    stop();
+    const third = start();
+    assert.ok(third);
+    third.writer.sendComplete({ exitCode: 0 });
+    await settle();
+    assert.deepEqual(heard, ['app-run-settled']);
+  });
+});
