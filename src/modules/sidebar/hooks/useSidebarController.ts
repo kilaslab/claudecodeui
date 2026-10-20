@@ -125,6 +125,10 @@ export function useSidebarController({
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [optimisticStarByProjectId, setOptimisticStarByProjectId] = useState<Map<string, boolean>>(new Map());
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
+  // The projects a "load more" request is out for. A ref next to the state
+  // above because the guard against a second press must be readable right away,
+  // before any render has seen the state change.
+  const loadingMoreProjectIdsRef = useRef<Set<string>>(new Set());
   const searchSeqRef = useRef(0);
   const recentConversationsSeqRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -660,25 +664,15 @@ export function useSidebarController({
   const getProjectSessions = useCallback((project: Project) => getAllSessions(project), []);
 
   const loadMoreSessionsForProject = useCallback(async (projectId: string) => {
-    if (!onLoadMoreSessions) {
+    // Checked and claimed in a ref, not inside a state updater: React defers
+    // updaters while anything else is queued, so a flag set there was still
+    // false when read on the next line and the request never went out.
+    if (!onLoadMoreSessions || loadingMoreProjectIdsRef.current.has(projectId)) {
       return;
     }
 
-    let shouldLoad = false;
-    setLoadingMoreProjects((previous) => {
-      if (previous.has(projectId)) {
-        return previous;
-      }
-
-      shouldLoad = true;
-      const next = new Set(previous);
-      next.add(projectId);
-      return next;
-    });
-
-    if (!shouldLoad) {
-      return;
-    }
+    loadingMoreProjectIdsRef.current.add(projectId);
+    setLoadingMoreProjects((previous) => new Set(previous).add(projectId));
 
     try {
       await onLoadMoreSessions(projectId);
@@ -686,6 +680,7 @@ export function useSidebarController({
       console.error('[Sidebar] Failed to load more sessions:', error);
       alert(t('messages.refreshError'));
     } finally {
+      loadingMoreProjectIdsRef.current.delete(projectId);
       setLoadingMoreProjects((previous) => {
         const next = new Set(previous);
         next.delete(projectId);
