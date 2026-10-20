@@ -115,6 +115,11 @@ export function createProviderRuntimeService(
       return (await runtime.steer?.(sessionId, command, options)) ?? null;
     },
 
+    hasActiveHeldTurn(sessionId: string): boolean {
+      return dependencies.listProviders().some((provider) =>
+        Boolean(provider.runtime.hasActiveHeldTurn?.(sessionId)));
+    },
+
     hasBackgroundWork(sessionId: string): boolean {
       // The turn in which a held process relays its last task counts: the task
       // has settled, but the process is still working the session.

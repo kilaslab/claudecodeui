@@ -99,6 +99,42 @@ test('a tab that subscribes during background work receives the run\'s later eve
   });
 });
 
+test('a subscribe ack agrees with the running-sessions poll while a held process relays a task', async () => {
+  // The poll lists a held process running a relay turn as a response in
+  // flight. An ack that says idle for the same session made the client delete
+  // the entry the poll had just created, and the next poll created it again:
+  // the activity indicator blinked for as long as the relay lasted.
+  await withIsolatedDatabase(async () => {
+    const run = startAndCompleteRun(createFakeSocket());
+    run.writer.send({ kind: 'text', role: 'assistant', provider: 'claude', sessionId: 'native-1', content: 'already persisted' } as never);
+
+    const newTab = createFakeSocket();
+    handleChatConnection(
+      newTab as never,
+      { user: { id: 1 } } as never,
+      {
+        runtime: {
+          hasBackgroundWork: (sessionId: string) => sessionId === SESSION_ID,
+          hasActiveHeldTurn: (sessionId: string) => sessionId === SESSION_ID,
+          getPendingApprovalsForSession: () => [],
+        } as never,
+      },
+    );
+    newTab.emit('message', JSON.stringify({ type: 'chat.subscribe', sessions: [{ sessionId: SESSION_ID, lastSeq: 0 }] }));
+    await settle();
+
+    assert.equal(newTab.frames[0]?.kind, 'chat_subscribed');
+    assert.equal(newTab.frames[0]?.isProcessing, true);
+    assert.equal(newTab.frames.length, 1, 'the finished run is persisted, so none of its events are replayed');
+
+    run.writer.send({ kind: 'text', role: 'assistant', provider: 'claude', sessionId: 'native-1', content: 'relay answer' } as never);
+    assert.ok(
+      newTab.frames.some((frame) => frame.content === 'relay answer'),
+      'the relay turn streams to the tab that subscribed during it',
+    );
+  });
+});
+
 test('a tab that subscribes to an idle session is not attached to its old run', async () => {
   await withIsolatedDatabase(async () => {
     const run = startAndCompleteRun(createFakeSocket());

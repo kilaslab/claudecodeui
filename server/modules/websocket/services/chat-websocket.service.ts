@@ -82,6 +82,13 @@ export type ProviderRuntimeGateway = {
    * that work's result.
    */
   hasBackgroundWork(sessionId: string): boolean;
+  /**
+   * Whether a held process is running a turn of its own for the session, such
+   * as the one relaying a background task's result. The running-sessions poll
+   * lists such a session as a response in flight, so a subscribe ack must say
+   * so too. Optional: a runtime that never holds a process has no such turn.
+   */
+  hasActiveHeldTurn?(sessionId: string): boolean;
   resolveToolApproval(requestId: string, payload: ProviderPermissionDecision): void;
   getPendingApprovalsForSession(sessionId: string): unknown[];
   /** Whether the provider's runtime can deliver a message into an already-running turn. */
@@ -832,7 +839,12 @@ function handleChatSubscribe(
     const lastRunId = typeof (target as AnyRecord).runId === 'string' ? (target as AnyRecord).runId as string : null;
 
     const run = chatRunRegistry.getRun(sessionId);
-    const isProcessing = chatRunRegistry.isProcessing(sessionId);
+    const isRunProcessing = chatRunRegistry.isProcessing(sessionId);
+    // A held process relaying background work runs a turn after its run has
+    // completed. The running-sessions poll already lists it as a response in
+    // flight; an idle ack for the same session would make the client delete
+    // the entry the poll created, until the next poll created it again.
+    const isProcessing = isRunProcessing || Boolean(dependencies.runtime.hasActiveHeldTurn?.(sessionId));
 
     // Future live events for this run should land on the socket that asked —
     // this is what makes mid-stream page refreshes work for all providers.
@@ -861,8 +873,9 @@ function handleChatSubscribe(
     // Replay only for RUNNING runs, strictly after the ack. Completed runs
     // are fully persisted to the provider transcript and served over REST —
     // replaying them (e.g. after a page reload where the client's lastSeq is
-    // 0) would duplicate messages the history fetch already returned.
-    if (isProcessing) {
+    // 0) would duplicate messages the history fetch already returned. A held
+    // relay turn belongs to a completed run, so it is not replayed either.
+    if (isRunProcessing) {
       for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq, lastRunId)) {
         sendJson(ws, event);
       }

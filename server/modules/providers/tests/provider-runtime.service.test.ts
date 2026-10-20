@@ -156,3 +156,23 @@ test('a session reads as having background work while its held process relays a 
   relaying = false;
   assert.equal(service.hasBackgroundWork('held-session'), false);
 });
+
+test('a session reads as running a held turn only while a provider\'s process is relaying, and not for background work alone', () => {
+  // A subscribe ack answers from this, so it agrees with the running-sessions
+  // poll, which lists a relaying process as a response in flight and a process
+  // that merely holds tasks as background work.
+  let relaying = true;
+  const service = createService([
+    createProvider('claude', createRuntime({
+      listBackgroundWork: () => [{ sessionId: 'held-session', tasks: [] }],
+      hasActiveHeldTurn: (sessionId) => sessionId === 'held-session' && relaying,
+    })),
+    createProvider('codex', createRuntime()),
+  ]);
+
+  assert.equal(service.hasActiveHeldTurn('held-session'), true);
+  assert.equal(service.hasActiveHeldTurn('other-session'), false);
+  relaying = false;
+  assert.equal(service.hasActiveHeldTurn('held-session'), false);
+  assert.equal(service.hasBackgroundWork('held-session'), true);
+});
