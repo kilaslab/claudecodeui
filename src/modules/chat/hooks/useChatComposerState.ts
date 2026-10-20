@@ -41,6 +41,8 @@ type UseChatComposerStateArgs = {
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
   resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
+  /** The mode an approved plan returns the session to, which the composer shows once planning ends. Sent with every plan mode message so the running turn can follow the composer. */
+  getPlanReturnPermissionMode?: (sessionId: string | null) => PermissionMode;
   /**
    * Model every send and command carries: the open session's model when there
    * is one, otherwise the user's per-provider selection.
@@ -51,7 +53,7 @@ type UseChatComposerStateArgs = {
   processingSessions?: SessionActivityMap;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
   /**
@@ -80,6 +82,19 @@ type MentionableFile = {
   name: string;
   path: string;
 };
+
+/** Shown when `/compact` is asked for while a response is still running. */
+const COMPACT_WAITS_NOTICE = 'Compact waits for the current response to finish. Run it again once the response ends.';
+
+/** Shown when `/compact` is asked for while an earlier message is open for editing: sending it then would replace the conversation from that message on. */
+const COMPACT_EDITING_NOTICE = 'Finish or cancel the edit before compacting: sending now would replace the conversation from the message being edited.';
+
+/** Shown when `/compact` is asked for in a chat that has no session yet, so there is nothing to compact. */
+const COMPACT_NO_SESSION_NOTICE = 'There is nothing to compact yet. Send a message first.';
+
+/** Shown when the websocket was not open, so a send reached nobody; the text stays in the composer. */
+const MESSAGE_NOT_SENT_NOTICE =
+  'Message not sent: the connection to the server is down. Your text is still in the box; send it again once the connection is back.';
 
 /** One outstanding `chat.steer` send, queued per-session in `pendingSteerRef`. */
 type PendingSteer = {
@@ -114,6 +129,12 @@ type SubmitOptions = {
   skipCommandInterception?: boolean;
   /** How a message submitted while a turn runs is delivered; plain submits queue. */
   mode?: ComposerSendMode;
+  /**
+   * Send this text instead of what is in the composer, and leave the composer —
+   * the user's draft and attachments — as it is. For messages the app sends on
+   * the user's behalf, such as `/compact`.
+   */
+  contentOverride?: string;
 };
 
 const createFakeSubmitEvent = () => {
@@ -257,6 +278,7 @@ export function useChatComposerState({
   permissionMode,
   cyclePermissionMode,
   resolvePermissionModeForProvider,
+  getPlanReturnPermissionMode,
   currentProviderModel,
   currentProviderEffort,
   isLoading,
@@ -433,6 +455,31 @@ export function useChatComposerState({
   // the order the server folds them in.
   const pendingSteerRef = useRef<Map<string, PendingSteer[]>>(new Map());
 
+  /**
+   * Asks the CLI to summarize the conversation to free up context, by sending
+   * it `/compact [instructions]` as a message — the CLI owns the command. The
+   * user's draft is left alone. Not while a response is running: the message
+   * would only wait behind it.
+   */
+  const compactConversation = useCallback((instructions?: string) => {
+    const refusal = isLoading
+      ? COMPACT_WAITS_NOTICE
+      : editingAnchorId
+        ? COMPACT_EDITING_NOTICE
+        : !sessionKey
+          ? COMPACT_NO_SESSION_NOTICE
+          : null;
+    if (refusal) {
+      addMessage({ type: 'assistant', content: refusal, timestamp: Date.now() });
+      return;
+    }
+    const trimmed = instructions?.trim();
+    void handleSubmitRef.current?.(createFakeSubmitEvent(), undefined, {
+      skipCommandInterception: true,
+      contentOverride: trimmed ? `/compact ${trimmed}` : '/compact',
+    });
+  }, [addMessage, editingAnchorId, isLoading, sessionKey]);
+
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
       const { action, data } = result;
@@ -490,11 +537,15 @@ export function useChatComposerState({
           onShowSettings?.();
           break;
 
+        case 'compact':
+          compactConversation(typeof data?.instructions === 'string' ? data.instructions : undefined);
+          break;
+
         default:
           console.warn('Unknown built-in command action:', action);
       }
     },
-    [onFileOpen, onShowSettings, addMessage],
+    [onFileOpen, onShowSettings, addMessage, compactConversation],
   );
 
   const closeCommandModal = useCallback(() => {
@@ -768,10 +819,17 @@ export function useChatComposerState({
 
     const toolsSettings = getToolsSettings();
 
+    const sendPermissionMode = resolvePermissionModeForProvider(provider, permissionMode);
+
     return {
       model: currentProviderModel,
       effort: currentProviderEffort,
-      permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
+      permissionMode: sendPermissionMode,
+      // A plan mode turn leaves plan mode when its plan is approved; the CLI
+      // cannot know which mode the composer returns to, so say so.
+      ...(sendPermissionMode === 'plan' && getPlanReturnPermissionMode
+        ? { planReturnMode: getPlanReturnPermissionMode(currentSessionId || selectedSession?.id || null) }
+        : {}),
       toolsSettings,
       skipPermissions: toolsSettings?.skipPermissions || false,
       sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
@@ -779,6 +837,8 @@ export function useChatComposerState({
   }, [
     currentProviderEffort,
     currentProviderModel,
+    currentSessionId,
+    getPlanReturnPermissionMode,
     permissionMode,
     provider,
     resolvePermissionModeForProvider,
@@ -880,8 +940,12 @@ export function useChatComposerState({
       // ever calling handleSubmit, kept here too since a caller can also
       // pass `{ mode: 'steer' }` directly (e.g. a replayed queued submission).
       const mode: ComposerSendMode = requestedMode === 'steer' && !canSteer ? 'queue' : requestedMode;
-      const currentInput = queuedSubmission?.content ?? inputValueRef.current;
-      const currentAttachments = queuedSubmission?.attachments ?? attachedFiles;
+      const overrideContent = submitOptions?.contentOverride;
+      // What a message the app sends for the user (overrideContent) must not
+      // ride on: the composer's edit state belongs to the user's own message.
+      const activeEditAnchorId = overrideContent === undefined ? editingAnchorId : null;
+      const currentInput = overrideContent ?? queuedSubmission?.content ?? inputValueRef.current;
+      const currentAttachments = overrideContent !== undefined ? [] : queuedSubmission?.attachments ?? attachedFiles;
       const previouslyUploadedAttachments = queuedSubmission?.uploadedAttachments ?? [];
 
       // `sendQueuedDraft` clears the persisted queued draft BEFORE calling
@@ -1001,7 +1065,7 @@ export function useChatComposerState({
           const existingPendingSteers = pendingSteerRef.current.get(steerSessionId) ?? [];
           pendingSteerRef.current.set(steerSessionId, [...existingPendingSteers, pendingSteer]);
 
-          sendMessage({
+          const steerDelivered = sendMessage({
             type: 'chat.steer',
             sessionId: steerSessionId,
             content: currentInput,
@@ -1010,6 +1074,27 @@ export function useChatComposerState({
               attachments: steerUploadedAttachments,
             },
           });
+          if (!steerDelivered) {
+            // Nothing reached the server, so no ack or rejection will ever come
+            // for this steer: forget it and give the user's text back.
+            pendingSteerRef.current.set(
+              steerSessionId,
+              (pendingSteerRef.current.get(steerSessionId) ?? []).filter((entry) => entry !== pendingSteer),
+            );
+            if (queuedSubmission) {
+              restoreQueuedSubmission(queuedSubmission);
+            } else {
+              setInput(currentInput);
+              inputValueRef.current = currentInput;
+              setAttachedFiles(currentAttachments);
+            }
+            addMessage({
+              type: 'error',
+              content: MESSAGE_NOT_SENT_NOTICE,
+              timestamp: new Date(),
+            });
+            return;
+          }
 
           recordSentMessage(currentInput, steerSessionId);
           resetCommandMenuState();
@@ -1166,17 +1251,15 @@ export function useChatComposerState({
         });
       }
 
-      // A new turn replaces the CLI process a session's background work runs
-      // under: the agents, workflows and commands it still has going are
+      // A message sent while a session's background work runs goes to the
+      // process that holds the work, which keeps running it. Only an edit of
+      // an earlier message rewinds the conversation, and that replaces the
+      // process: the agents, workflows and commands it still has going are
       // stopped, or finish where nothing is listening. Sending is the user's
       // call, but not one to make for them — and queueing behind the work,
       // which the server holds until it finishes, is the safe alternative.
-      //
-      // A replayed interrupt-mode `queuedSubmission` already cleared this
-      // with the user in `sendQueuedDraft`, before it cleared the draft —
-      // asking again here would double-prompt for the same background work.
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
-      if (backgroundActivity?.background && !(queuedSubmission && mode === 'interrupt')) {
+      if (backgroundActivity?.background && activeEditAnchorId) {
         const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
           .map((task) => describeBackgroundTask(task, t));
         const choice = await askBeforeSendingOverBackgroundWork(work);
@@ -1210,8 +1293,50 @@ export function useChatComposerState({
         // Tags this echo as the replacement, so the truncation the server
         // broadcasts a moment later cuts the turns being replaced without
         // taking the message the user just sent with them.
-        ...(editingAnchorId ? { replacesAnchorId: editingAnchorId } : {}),
+        ...(activeEditAnchorId ? { replacesAnchorId: activeEditAnchorId } : {}),
       };
+
+      // One message shape for every provider. The backend resolves the
+      // provider, project path, and provider-native resume id from the
+      // session row; `options` only carries composer-level preferences.
+      //
+      // Sent before anything is drawn or cleared: nothing between here and the
+      // end of this function awaits, so the server's echo cannot arrive first,
+      // and a socket that is not open can still leave the draft untouched.
+      const delivered = sendMessage({
+        // Replacing an already-sent message is its own frame: it changes the
+        // shape of the conversation, so it gets validated separately and can
+        // report why it was refused.
+        type: activeEditAnchorId ? 'chat.edit-send' : 'chat.send',
+        sessionId: targetSessionId,
+        ...(activeEditAnchorId ? { anchorId: activeEditAnchorId } : {}),
+        content: messageContent,
+        options: {
+          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
+          attachments: uploadedAttachments,
+          ...(mode === 'interrupt' ? { interrupt: true } : {}),
+        },
+      });
+      if (!delivered) {
+        // A replayed queued draft was cleared before this submit; put it back.
+        if (queuedSubmission) {
+          restoreQueuedSubmission(queuedSubmission);
+        } else if (overrideContent === undefined) {
+          // The text stays where it is — or, for a new chat whose session was
+          // created a moment ago, goes with the user to that session's draft:
+          // the composer is already moving there and would otherwise open it empty.
+          writeDraftText(targetSessionId, currentInput);
+          setInput(currentInput);
+          inputValueRef.current = currentInput;
+          setAttachedFiles(currentAttachments);
+        }
+        addMessage({
+          type: 'error',
+          content: MESSAGE_NOT_SENT_NOTICE,
+          timestamp: new Date(),
+        });
+        return;
+      }
 
       addMessage(userMessage);
       // Mark this request as processing in the per-session activity map (the
@@ -1224,44 +1349,32 @@ export function useChatComposerState({
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      // One message shape for every provider. The backend resolves the
-      // provider, project path, and provider-native resume id from the
-      // session row; `options` only carries composer-level preferences.
-      sendMessage({
-        // Replacing an already-sent message is its own frame: it changes the
-        // shape of the conversation, so it gets validated separately and can
-        // report why it was refused.
-        type: editingAnchorId ? 'chat.edit-send' : 'chat.send',
-        sessionId: targetSessionId,
-        ...(editingAnchorId ? { anchorId: editingAnchorId } : {}),
-        content: messageContent,
-        options: {
-          ...(queuedSubmission?.options ?? buildSendOptions(messageContent)),
-          attachments: uploadedAttachments,
-          ...(mode === 'interrupt' ? { interrupt: true } : {}),
-        },
-      });
-      setEditingAnchorId(null);
+      if (activeEditAnchorId) {
+        setEditingAnchorId(null);
+      }
 
       // Recorded under the (possibly just-allocated) session id, so the first
       // message of a new chat lands in the history of the session the user is
       // navigated to. Queued drafts were recorded when they were queued; the
       // consecutive-duplicate check keeps this second call a no-op.
       recordSentMessage(currentInput, targetSessionId);
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedFiles([]);
-      setFileErrors(new Map());
-      setIsTextareaExpanded(false);
+      // A message the app sent for the user (overrideContent) is not the
+      // composer's text: what they are typing stays.
+      if (overrideContent === undefined) {
+        setInput('');
+        inputValueRef.current = '';
+        resetCommandMenuState();
+        setAttachedFiles([]);
+        setFileErrors(new Map());
+        setIsTextareaExpanded(false);
 
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
 
-      if (draftScopeRef.current) {
-        writeDraftText(draftScopeRef.current, '');
+        if (draftScopeRef.current) {
+          writeDraftText(draftScopeRef.current, '');
+        }
       }
     },
     [
@@ -1381,32 +1494,12 @@ export function useChatComposerState({
     }
     const targetKey = queuedDraftSessionRef.current ?? sessionKey;
 
-    // Interrupt mode can hit the same "background work still running" gate
-    // handleSubmit itself guards — replacing the turn stops anything that
-    // hasn't reported back yet. Ask BEFORE clearing the draft below: a
-    // cancelled prompt used to arrive after the draft was already gone,
-    // losing it for nothing. handleSubmit's own copy of this gate is skipped
-    // for this exact replay (queuedSubmission + mode 'interrupt') so the user
-    // is only asked once. "Queue" leaves the draft where it is: it is already
-    // queued behind the work.
-    if (mode === 'interrupt' && targetKey) {
-      const backgroundActivity = processingSessionsRef.current?.get(targetKey);
-      if (backgroundActivity?.background) {
-        const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
-          .map((task) => describeBackgroundTask(task, t));
-        const choice = await askBeforeSendingOverBackgroundWork(work);
-        if (choice !== 'send') {
-          return;
-        }
-      }
-    }
-
     if (targetKey) {
       clearQueuedMessage(targetKey);
     }
     setQueuedDraft(null);
     void handleSubmit(createFakeSubmitEvent(), draft, { mode });
-  }, [queuedDraft, sessionKey, handleSubmit, t, askBeforeSendingOverBackgroundWork]);
+  }, [queuedDraft, sessionKey, handleSubmit]);
 
   /**
    * Pops the oldest outstanding steer for `sessionId` off its FIFO queue and
@@ -1900,6 +1993,7 @@ export function useChatComposerState({
     editingAnchorId,
     beginEditMessage,
     cancelEditMessage,
+    compactConversation,
     textareaRef,
     inputHighlightRef,
     isTextareaExpanded,

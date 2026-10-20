@@ -62,7 +62,7 @@ test('a queued message the server claims is reported, so its run can be watched'
       isLoading: true,
       canAbortSession: true,
       tokenBudget: null,
-      sendMessage: () => undefined,
+      sendMessage: () => true,
       onQueuedMessageSent,
       scrollToBottom: () => undefined,
       addMessage: () => undefined,

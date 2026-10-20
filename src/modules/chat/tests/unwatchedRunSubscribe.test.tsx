@@ -78,9 +78,11 @@ async function renderChatView(options: {
   initialProcessing?: SessionActivityMap;
   lastSeq?: Map<string, RunReplayPosition>;
   getSessionActivity?: () => SessionActivity | undefined;
+  /** Whether the socket takes the frames; false is a socket that is not open. */
+  socketTakesFrames?: boolean;
 } = {}) {
   const { useChatSessionState } = await import('@/modules/chat/hooks/useChatSessionState');
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn((_message: unknown) => options.socketTakesFrames !== false);
   const watchedRunSessionsRef = { current: new Map<string, WatchedRunSource>() };
   const statusCheckSentAtRef = { current: new Map<string, number>() };
   const lastSeqRef = { current: options.lastSeq ?? new Map<string, RunReplayPosition>() };
@@ -417,4 +419,16 @@ test('an idle ack newer than the busy state it contradicts does not subscribe ag
   dispatch({ kind: 'chat_subscribed', isProcessing: false, pendingPermissions: [] });
 
   assert.equal(subscribes().length, 1);
+});
+
+test('a subscribe the socket refused is asked again by the next trigger, not left marked as sent', async () => {
+  // Nothing left the browser, so no ack is coming. Leaving the session marked
+  // as asked would make every later poll skip it, and a run that started while
+  // the socket was down would never be attached.
+  const view = await renderChatView({ socketTakesFrames: false });
+  assert.equal(view.subscribes().length, 1, 'opening the session tried once');
+  assert.equal(view.watchedRunSessionsRef.current.get('session-a'), undefined, 'and did not record a subscribe that never left');
+
+  await view.poll(busy);
+  assert.equal(view.subscribes().length, 2, 'the poll that says it is busy tries again');
 });

@@ -16,7 +16,7 @@ type AgentInspectorProviderProps = {
 /**
  * Owns the agent inspector for one transcript: the agents opened, and the
  * drawer that shows the innermost of them. Mounted by chat's ChatInterface
- * around the message pane, inside its TranscriptSessionContext.
+ * around the message pane and the session dock, inside its TranscriptSessionContext.
  */
 export function AgentInspectorProvider({ children, createDiff, onFileOpen, selectedProject }: AgentInspectorProviderProps) {
   const sessionId = useTranscriptSessionId();

@@ -25,6 +25,11 @@ import { useScheduledMessages } from '@/modules/chat/composer/useScheduledMessag
 import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
+import { useLingeringActivity } from '@/modules/chat/hooks/useLingeringActivity';
+import { useSessionDock } from '@/modules/chat/hooks/useSessionDock';
+import { DockCapsules } from '@/modules/chat/dock/DockCapsules';
+import { SessionDock } from '@/modules/chat/dock/SessionDock';
+import { buildSessionRoster, readSessionChecklist } from '@/modules/chat/utils/sessionRoster';
 import type { ComposerSendMode } from '@/modules/chat/hooks/useChatComposerState';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
 import {
@@ -40,7 +45,7 @@ type ChatInterfaceProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onNavigateToSession?: (targetSessionId: string, options?: SessionNavigationOptions) => void;
   onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
@@ -128,6 +133,7 @@ function ChatInterface({
     selectPermissionMode,
     cyclePermissionMode,
     applyPlanModeChange,
+    resolvePlanReturnMode,
     providerModelCatalog,
     providerModelsLoading,
     providerModelActions,
@@ -136,6 +142,7 @@ function ChatInterface({
     resolvePermissionModeForProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    supportsCompaction,
   } = useChatProviderState({
     selectedSession,
     selectedProject,
@@ -212,6 +219,13 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
+  // The mode an approved plan returns to, read at send time so the running turn
+  // follows the composer and not the mode the run started in.
+  const getPlanReturnPermissionMode = useCallback(
+    (sessionId: string | null) => resolvePlanReturnMode(sessionId),
+    [resolvePlanReturnMode],
+  );
+
   const {
     input,
     setInput,
@@ -271,6 +285,7 @@ function ChatInterface({
     showCostModal,
     editingAnchorId,
     beginEditMessage,
+    compactConversation,
     cancelEditMessage,
   } = useChatComposerState({
     selectedProject,
@@ -299,6 +314,7 @@ function ChatInterface({
     setIsUserScrolledUp,
     setPendingPermissionRequests,
     resolvePermissionModeForProvider,
+    getPlanReturnPermissionMode,
   });
 
   // Threads the composer's chosen send mode (queue/steer/interrupt) through to
@@ -461,10 +477,34 @@ function ChatInterface({
     }
   }, [currentSessionId, provider, selectProviderEffort, selectedSession?.id]);
 
+  // The indicator outlives a vanished entry briefly, so a poll and an ack
+  // disagreeing for an instant does not blink it or move the transcript.
+  // Keyed the way `sessionActivity` is derived (the selected session first), so
+  // a lingering indicator never carries one session's name onto another.
+  const displayedActivity = useLingeringActivity(sessionActivity, selectedSession?.id || currentSessionId || null);
+
+  // What the dock lists: the session's subagents and its checklist, read from
+  // the transcript rows and the activity map. The capsules above the composer
+  // and the dock itself draw from the same values, so their counts agree.
+  const sessionRoster = useMemo(
+    () => buildSessionRoster(chatMessages, sessionActivity?.tasks),
+    [chatMessages, sessionActivity?.tasks],
+  );
+  const sessionChecklist = useMemo(() => readSessionChecklist(chatMessages), [chatMessages]);
+  const hasDockContent = Boolean(sessionChecklist) || sessionRoster.running.length + sessionRoster.finished.length > 0;
+
+  const chatRowRef = useRef<HTMLDivElement>(null);
+  const { layout: dockLayout, isOpen: isDockOpen, toggle: toggleDock, close: closeDock } = useSessionDock(chatRowRef);
+
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
-  const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
+  const hasActivityIndicator = Boolean(displayedActivity && pendingPermissionRequests.length === 0);
+  // The scroll-to-bottom button sits above whatever is stacked over the composer:
+  // the capsules (a row of 28 px) and, when it shows, the activity tab.
+  const scrollButtonOffsetClass = hasDockContent
+    ? hasActivityIndicator ? '-top-[6.75rem]' : '-top-[4.625rem]'
+    : '-top-11';
 
   const selectedProviderLabel =
     provider === 'cursor'
@@ -493,164 +533,190 @@ function ChatInterface({
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
-      <div className="flex h-full min-h-0 flex-col">
+      <div ref={chatRowRef} className="flex h-full min-h-0">
         <MarkdownWorkspaceContext.Provider value={markdownWorkspaceValue}>
           <TranscriptSessionContext.Provider value={transcriptSessionValue}>
             <AgentInspectorProvider createDiff={createDiff} onFileOpen={onFileOpen} selectedProject={selectedProject}>
-              <ChatMessagesPane
-                scrollContainerRef={scrollContainerRef}
-                // Not redundant with the `scroll` listener. A first page is 20 rows,
-                // tool results fold into their calls, and the "load earlier" link is
-                // hidden while more pages exist — so a short transcript is often not
-                // scrollable at all and never emits `scroll`. Wheel and touch are
-                // then the only way to reach the top pager or the "load all" overlay.
-                onWheel={handleScroll}
-                onTouchMove={handleScroll}
-                isLoadingSessionMessages={isLoadingSessionMessages}
-                isProcessing={isProcessing}
-                hasActivityIndicator={hasActivityIndicator}
-                chatMessages={chatMessages}
-                selectedSession={selectedSession}
-                currentSessionId={currentSessionId}
-                provider={provider}
-                setProvider={setProvider}
-                textareaRef={textareaRef}
-                providerModels={providerModels}
-                setProviderModel={setStoredProviderModel}
-                providerModelCatalog={providerModelCatalog}
-                providerModelActions={providerModelActions}
-                providerModelsLoading={providerModelsLoading}
-                tasksEnabled={tasksEnabled}
-                isTaskMasterInstalled={isTaskMasterInstalled}
-                onShowAllTasks={onShowAllTasks}
-                setInput={setInput}
-                isLoadingMoreMessages={isLoadingMoreMessages}
-                hasMoreMessages={hasMoreMessages}
-                totalMessages={totalMessages}
-                sessionMessagesCount={chatMessages.length}
-                visibleMessageCount={visibleMessageCount}
-                visibleMessages={visibleMessages}
-                loadEarlierMessages={loadEarlierMessages}
-                revealMessage={revealMessage}
-                backgroundTasks={sessionActivity?.tasks}
-                sendMessage={sendMessage}
-                loadAllMessages={loadAllMessages}
-                allMessagesLoaded={allMessagesLoaded}
-                isLoadingAllMessages={isLoadingAllMessages}
-                loadAllJustFinished={loadAllJustFinished}
-                showLoadAllOverlay={showLoadAllOverlay}
-                createDiff={createDiff}
-                onFileOpen={onFileOpen}
-                onShowSettings={onShowSettings}
-                onGrantToolPermission={handleGrantToolPermission}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                selectedProject={selectedProject}
-                // Editing replaces the turn and everything after it, so it is only
-                // offered when the session is idle — a half-truncated transcript with
-                // a live stream writing into it is not recoverable.
-                onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
-                onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
-                onLoadFullTranscript={loadFullTranscript}
-              />
+              <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+                <ChatMessagesPane
+                  scrollContainerRef={scrollContainerRef}
+                  // Not redundant with the `scroll` listener. A first page is 20 rows,
+                  // tool results fold into their calls, and the "load earlier" link is
+                  // hidden while more pages exist — so a short transcript is often not
+                  // scrollable at all and never emits `scroll`. Wheel and touch are
+                  // then the only way to reach the top pager or the "load all" overlay.
+                  onWheel={handleScroll}
+                  onTouchMove={handleScroll}
+                  isLoadingSessionMessages={isLoadingSessionMessages}
+                  isProcessing={isProcessing}
+                  // The capsules above the composer already keep clear of the tab, so
+                  // the pane reserves its own room only when there are none.
+                  hasActivityIndicator={hasActivityIndicator && !hasDockContent}
+                  chatMessages={chatMessages}
+                  selectedSession={selectedSession}
+                  currentSessionId={currentSessionId}
+                  provider={provider}
+                  setProvider={setProvider}
+                  textareaRef={textareaRef}
+                  providerModels={providerModels}
+                  setProviderModel={setStoredProviderModel}
+                  providerModelCatalog={providerModelCatalog}
+                  providerModelActions={providerModelActions}
+                  providerModelsLoading={providerModelsLoading}
+                  tasksEnabled={tasksEnabled}
+                  isTaskMasterInstalled={isTaskMasterInstalled}
+                  onShowAllTasks={onShowAllTasks}
+                  setInput={setInput}
+                  isLoadingMoreMessages={isLoadingMoreMessages}
+                  hasMoreMessages={hasMoreMessages}
+                  totalMessages={totalMessages}
+                  sessionMessagesCount={chatMessages.length}
+                  visibleMessageCount={visibleMessageCount}
+                  visibleMessages={visibleMessages}
+                  loadEarlierMessages={loadEarlierMessages}
+                  loadAllMessages={loadAllMessages}
+                  allMessagesLoaded={allMessagesLoaded}
+                  isLoadingAllMessages={isLoadingAllMessages}
+                  loadAllJustFinished={loadAllJustFinished}
+                  showLoadAllOverlay={showLoadAllOverlay}
+                  createDiff={createDiff}
+                  onFileOpen={onFileOpen}
+                  onShowSettings={onShowSettings}
+                  onGrantToolPermission={handleGrantToolPermission}
+                  showRawParameters={showRawParameters}
+                  showThinking={showThinking}
+                  selectedProject={selectedProject}
+                  // Editing replaces the turn and everything after it, so it is only
+                  // offered when the session is idle — a half-truncated transcript with
+                  // a live stream writing into it is not recoverable.
+                  onEditMessage={supportsMessageEditing && !isProcessing ? beginEditMessage : undefined}
+                  onForkFromMessage={supportsSessionForking ? handleForkFromMessage : undefined}
+                  onLoadFullTranscript={loadFullTranscript}
+                />
+
+                <DockCapsules
+                  roster={sessionRoster}
+                  checklist={sessionChecklist}
+                  isOpen={isDockOpen}
+                  onToggle={toggleDock}
+                  leavesRoomForActivity={hasActivityIndicator}
+                />
+
+
+                <div className="relative flex-shrink-0">
+                  {isUserScrolledUp && chatMessages.length > 0 && (
+                    <div className={`pointer-events-none absolute left-0 right-0 z-20 flex justify-center ${scrollButtonOffsetClass}`}>
+                      <button
+                        type="button"
+                        onClick={scrollToBottomAndReset}
+                        aria-label={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
+                        className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-200 hover:bg-accent hover:text-foreground"
+                        title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
+                      >
+                        <ArrowDownIcon className="h-4 w-4" aria-hidden />
+                      </button>
+                    </div>
+                  )}
+
+                  <ChatComposer
+                  pendingPermissionRequests={pendingPermissionRequests}
+                  handlePermissionDecision={handlePermissionDecision}
+                  handleGrantToolPermission={handleGrantToolPermission}
+                  activity={displayedActivity}
+                  isLoading={isProcessing}
+                  onAbortSession={handleAbortSession}
+                  onStopBackgroundWork={handleStopBackgroundWork}
+                  permissionMode={permissionMode}
+                  availablePermissionModes={availablePermissionModes}
+                  onSelectPermissionMode={selectPermissionMode}
+                  providerLabel={selectedProviderLabel}
+                  effort={currentProviderEffort}
+                  availableEffortOptions={currentProviderEffortOptions}
+                  onSelectEffort={handleSelectComposerEffort}
+                  model={currentProviderModel}
+                  availableModelOptions={currentProviderModelOptions}
+                  onSelectModel={handleSelectComposerModel}
+                  modelsLoading={providerModelsLoading}
+                  tokenBudget={tokenBudget}
+                  onShowTokenUsage={showCostModal}
+                  onCompact={compactConversation}
+                  canCompact={supportsCompaction && chatMessages.length > 0 && Boolean(selectedSession?.id || currentSessionId)}
+                  isEditingSentMessage={Boolean(editingAnchorId)}
+                  onCancelEditMessage={cancelEditMessage}
+                  scheduledMessages={scheduledMessages}
+                  onScheduleMessage={handleScheduleMessage}
+                  onCancelScheduledMessage={cancelScheduledMessage}
+                  slashCommandsCount={slashCommandsCount}
+                  onToggleCommandMenu={handleToggleCommandMenu}
+                  hasInput={Boolean(input.trim())}
+                  onClearInput={handleClearInput}
+                  onSubmit={handleSubmitWithMode}
+                  isDragActive={isDragActive}
+                  queuedDraft={queuedDraft}
+                  backgroundSendPrompt={backgroundSendPrompt}
+                  onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
+                  onEditQueuedDraft={editQueuedDraft}
+                  onDeleteQueuedDraft={deleteQueuedDraft}
+                  onSendQueuedDraft={sendQueuedDraft}
+                  sendMode={sendMode}
+                  onSelectSendMode={setSendMode}
+                  canSteer={canSteer}
+                  attachedFiles={attachedFiles}
+                  onRemoveAttachment={(index) =>
+                    setAttachedFiles((previous) =>
+                      previous.filter((_, currentIndex) => currentIndex !== index),
+                    )
+                  }
+                  fileErrors={fileErrors}
+                  showFileDropdown={showFileDropdown}
+                  filteredFiles={filteredFiles}
+                  selectedFileIndex={selectedFileIndex}
+                  onSelectFile={selectFile}
+                  filteredCommands={filteredCommands}
+                  selectedCommandIndex={selectedCommandIndex}
+                  onCommandSelect={handleCommandSelect}
+                  onCloseCommandMenu={resetCommandMenuState}
+                  isCommandMenuOpen={showCommandMenu}
+                  frequentCommands={commandQuery ? [] : frequentCommands}
+                  getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
+                  getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
+                  openAttachmentPicker={openAttachmentPicker}
+                  inputHighlightRef={inputHighlightRef}
+                  renderInputWithMentions={renderInputWithMentions}
+                  textareaRef={textareaRef}
+                  input={input}
+                  onVoiceTranscript={handleVoiceTranscript}
+                  onInputChange={handleInputChange}
+                  onTextareaClick={handleTextareaClick}
+                  onTextareaKeyDown={handleKeyDown}
+                  onTextareaPaste={handlePaste}
+                  onTextareaScrollSync={syncInputOverlayScroll}
+                  onTextareaInput={handleTextareaInput}
+                  isInputFocused={isInputFocused}
+                  onInputFocusChange={handleInputFocusChange}
+                  placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
+                  isTextareaExpanded={isTextareaExpanded}
+                  sendByCtrlEnter={sendByCtrlEnter}
+                />
+                </div>
+
+              </div>
+
+              {isDockOpen && hasDockContent && (
+                <SessionDock
+                  roster={sessionRoster}
+                  checklist={sessionChecklist}
+                  layout={dockLayout}
+                  sessionId={selectedSession?.id || currentSessionId}
+                  sendMessage={sendMessage}
+                  onReveal={revealMessage}
+                  onLoadAll={loadAllMessages}
+                  onClose={closeDock}
+                />
+              )}
             </AgentInspectorProvider>
           </TranscriptSessionContext.Provider>
         </MarkdownWorkspaceContext.Provider>
-
-        <div className="relative flex-shrink-0">
-          {isUserScrolledUp && chatMessages.length > 0 && (
-            <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
-              <button
-                type="button"
-                onClick={scrollToBottomAndReset}
-                aria-label={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
-                className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-200 hover:bg-accent hover:text-foreground"
-                title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
-              >
-                <ArrowDownIcon className="h-4 w-4" aria-hidden />
-              </button>
-            </div>
-          )}
-
-          <ChatComposer
-          pendingPermissionRequests={pendingPermissionRequests}
-          handlePermissionDecision={handlePermissionDecision}
-          handleGrantToolPermission={handleGrantToolPermission}
-          activity={sessionActivity}
-          isLoading={isProcessing}
-          onAbortSession={handleAbortSession}
-          onStopBackgroundWork={handleStopBackgroundWork}
-          permissionMode={permissionMode}
-          availablePermissionModes={availablePermissionModes}
-          onSelectPermissionMode={selectPermissionMode}
-          providerLabel={selectedProviderLabel}
-          effort={currentProviderEffort}
-          availableEffortOptions={currentProviderEffortOptions}
-          onSelectEffort={handleSelectComposerEffort}
-          model={currentProviderModel}
-          availableModelOptions={currentProviderModelOptions}
-          onSelectModel={handleSelectComposerModel}
-          modelsLoading={providerModelsLoading}
-          tokenBudget={tokenBudget}
-          onShowTokenUsage={showCostModal}
-          isEditingSentMessage={Boolean(editingAnchorId)}
-          onCancelEditMessage={cancelEditMessage}
-          scheduledMessages={scheduledMessages}
-          onScheduleMessage={handleScheduleMessage}
-          onCancelScheduledMessage={cancelScheduledMessage}
-          slashCommandsCount={slashCommandsCount}
-          onToggleCommandMenu={handleToggleCommandMenu}
-          hasInput={Boolean(input.trim())}
-          onClearInput={handleClearInput}
-          onSubmit={handleSubmitWithMode}
-          isDragActive={isDragActive}
-          queuedDraft={queuedDraft}
-          backgroundSendPrompt={backgroundSendPrompt}
-          onResolveBackgroundSendPrompt={resolveBackgroundSendPrompt}
-          onEditQueuedDraft={editQueuedDraft}
-          onDeleteQueuedDraft={deleteQueuedDraft}
-          onSendQueuedDraft={sendQueuedDraft}
-          sendMode={sendMode}
-          onSelectSendMode={setSendMode}
-          canSteer={canSteer}
-          attachedFiles={attachedFiles}
-          onRemoveAttachment={(index) =>
-            setAttachedFiles((previous) =>
-              previous.filter((_, currentIndex) => currentIndex !== index),
-            )
-          }
-          fileErrors={fileErrors}
-          showFileDropdown={showFileDropdown}
-          filteredFiles={filteredFiles}
-          selectedFileIndex={selectedFileIndex}
-          onSelectFile={selectFile}
-          filteredCommands={filteredCommands}
-          selectedCommandIndex={selectedCommandIndex}
-          onCommandSelect={handleCommandSelect}
-          onCloseCommandMenu={resetCommandMenuState}
-          isCommandMenuOpen={showCommandMenu}
-          frequentCommands={commandQuery ? [] : frequentCommands}
-          getRootProps={getRootProps as (...args: unknown[]) => Record<string, unknown>}
-          getInputProps={getInputProps as (...args: unknown[]) => Record<string, unknown>}
-          openAttachmentPicker={openAttachmentPicker}
-          inputHighlightRef={inputHighlightRef}
-          renderInputWithMentions={renderInputWithMentions}
-          textareaRef={textareaRef}
-          input={input}
-          onVoiceTranscript={handleVoiceTranscript}
-          onInputChange={handleInputChange}
-          onTextareaClick={handleTextareaClick}
-          onTextareaKeyDown={handleKeyDown}
-          onTextareaPaste={handlePaste}
-          onTextareaScrollSync={syncInputOverlayScroll}
-          onTextareaInput={handleTextareaInput}
-          isInputFocused={isInputFocused}
-          onInputFocusChange={handleInputFocusChange}
-          placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
-          isTextareaExpanded={isTextareaExpanded}
-          sendByCtrlEnter={sendByCtrlEnter}
-        />
-        </div>
       </div>
 
       <CommandResultModal

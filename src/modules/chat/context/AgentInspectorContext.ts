@@ -14,7 +14,7 @@ export const AgentInspectorContext = createContext<AgentInspectorContextValue | 
 /**
  * The inspector of the transcript a card is drawn in, or null outside one (an
  * exported transcript, a test): a card then offers no Inspect button. Used by
- * chat's SubagentPanel and WorkflowPanel.
+ * chat's SubagentPanel, WorkflowPanel and DockSubagentRow.
  */
 export function useAgentInspector(): AgentInspectorContextValue | null {
   return useContext(AgentInspectorContext);

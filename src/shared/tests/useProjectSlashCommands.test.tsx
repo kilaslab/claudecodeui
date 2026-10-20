@@ -73,7 +73,7 @@ test('assembles built-in, deduped skills and custom commands in that order', asy
     skillName: 'review',
   });
   assert.equal(result.current.error, false);
-  assert.deepEqual(listCommands.mock.calls[0], ['/work/triage-repo']);
+  assert.deepEqual(listCommands.mock.calls[0], ['/work/triage-repo', 'claude']);
   assert.deepEqual(listSkills.mock.calls[0], ['claude', { workspacePath: '/work/triage-repo' }]);
 });
 

@@ -94,7 +94,7 @@ type UseChatSessionStateArgs = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
   processingSessions?: SessionActivityMap;
@@ -688,7 +688,7 @@ export function useChatSessionState({
       watchedRunSessionsRef.current.set(sessionId, 'subscribe');
     }
     const position = lastSeqRef.current.get(sessionId);
-    sendMessage({
+    const sent = sendMessage({
       type: 'chat.subscribe',
       sessions: [{
         sessionId,
@@ -696,6 +696,11 @@ export function useChatSessionState({
         ...(position?.runId ? { runId: position.runId } : {}),
       }],
     });
+    // A subscribe that never left will get no ack, so the session must not be
+    // left marked as asked: the next trigger has to send it again.
+    if (!sent && watchedRunSessionsRef.current.get(sessionId) === 'subscribe') {
+      watchedRunSessionsRef.current.delete(sessionId);
+    }
   }, [lastSeqRef, sendMessage, statusCheckSentAtRef, watchedRunSessionsRef]);
 
   useEffect(() => {

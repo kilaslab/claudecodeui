@@ -36,9 +36,9 @@ function describeBackgroundTasks(allTasks: BackgroundTaskSummary[], t: TFunction
 /**
  * Minimal response-in-progress indicator, in the spirit of the inline status
  * lines in Claude Code / Codex / OpenCode: a shimmering activity label, the
- * elapsed time, and an interrupt affordance. Rendered only while the viewed
- * session has an entry in the processing map; it disappears the instant that
- * entry is removed.
+ * elapsed time, and an interrupt affordance. Rendered while the viewed session
+ * has an entry in the processing map, and for a moment after it is removed (see
+ * useLingeringActivity), so an entry that vanishes and returns does not blink.
  *
  * A session whose turn has ended while the tasks it launched still run is
  * drawn in the workflow and agent cards' purple, naming the work. It has no

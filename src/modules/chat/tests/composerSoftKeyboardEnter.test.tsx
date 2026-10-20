@@ -132,7 +132,7 @@ afterEach(() => {
 });
 
 test('a fine pointer keeps plain Enter as the send key', async () => {
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn((_message: { type?: string }) => true);
   const view = renderComposer(sendMessage);
   const enter = enterEvent();
 
@@ -144,7 +144,7 @@ test('a fine pointer keeps plain Enter as the send key', async () => {
 
 test('on a soft keyboard, plain Enter is left to insert the newline', async () => {
   coarsePointer = true;
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn((_message: { type?: string }) => true);
   const view = renderComposer(sendMessage);
   const enter = enterEvent();
 
@@ -158,7 +158,7 @@ test('on a soft keyboard, plain Enter is left to insert the newline', async () =
 
 test('a physical keyboard paired to a tablet keeps its Ctrl+Enter chord', async () => {
   coarsePointer = true;
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn((_message: { type?: string }) => true);
   const view = renderComposer(sendMessage);
 
   await typeAndPress(view, enterEvent({ ctrlKey: true }));
@@ -168,7 +168,7 @@ test('a physical keyboard paired to a tablet keeps its Ctrl+Enter chord', async 
 
 test('Shift+Enter stays a newline in every environment', async () => {
   coarsePointer = true;
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn((_message: { type?: string }) => true);
   const view = renderComposer(sendMessage);
 
   await typeAndPress(view, enterEvent({ shiftKey: true }));
@@ -178,7 +178,7 @@ test('Shift+Enter stays a newline in every environment', async () => {
 
 test('on a soft keyboard, plain Enter during a running turn inserts the newline instead of queueing', async () => {
   coarsePointer = true;
-  const sendMessage = vi.fn();
+  const sendMessage = vi.fn((_message: { type?: string }) => true);
   const view = renderComposer(sendMessage, undefined, true);
   const enter = enterEvent();
 

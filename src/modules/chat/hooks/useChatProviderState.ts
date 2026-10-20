@@ -89,6 +89,7 @@ type ProviderCapabilities = {
   supportsEffort?: boolean;
   supportsMessageEditing?: boolean;
   supportsSessionForking?: boolean;
+  supportsCompaction?: boolean;
 };
 
 type ProviderCapabilitiesApiResponse = {
@@ -458,6 +459,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [permissionMode, provider, selectedSession?.id]);
 
   /**
+   * The mode an approved plan returns a session to: the one it had before
+   * plan mode was entered, else the provider's default. Applied by
+   * applyPlanModeChange when the plan is approved, and sent with every plan
+   * mode message so the running turn follows the composer.
+   */
+  const resolvePlanReturnMode = useCallback((sessionId: string | null, sessionProvider: LLMProvider = provider): PermissionMode => {
+    const validModes = getPermissionModesForProvider(sessionProvider);
+    const prePlanMode = sessionId
+      ? localStorage.getItem(prePlanModeStorageKey(sessionId)) as PermissionMode | null
+      : null;
+    return prePlanMode && prePlanMode !== 'plan' && validModes.includes(prePlanMode)
+      ? prePlanMode
+      : getDefaultPermissionModeForProvider(sessionProvider);
+  }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider, provider]);
+
+  /**
    * Follows a plan-mode change the CLI made during a live run, reported by
    * useChatRealtimeHandlers. Entering remembers the mode the session had, and
    * an approved plan returns to it, as the CLI restores its pre-plan mode.
@@ -492,16 +509,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (currentMode !== 'plan') {
         return;
       }
-      const prePlanMode = localStorage.getItem(prePlanModeStorageKey(sessionId)) as PermissionMode | null;
+      nextMode = resolvePlanReturnMode(sessionId, sessionProvider);
       localStorage.removeItem(prePlanModeStorageKey(sessionId));
-      nextMode = prePlanMode && prePlanMode !== 'plan' && validModes.includes(prePlanMode) ? prePlanMode : defaultMode;
     }
 
     localStorage.setItem(`permissionMode-${sessionId}`, nextMode);
     if (isOnScreen) {
       setPermissionMode(nextMode);
     }
-  }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider, provider, selectedSession?.id]);
+  }, [getDefaultPermissionModeForProvider, getPermissionModesForProvider, provider, resolvePlanReturnMode, selectedSession?.id]);
 
   const cyclePermissionMode = useCallback(() => {
     const modes = getPermissionModesForProvider(provider);
@@ -523,6 +539,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
    */
   const supportsMessageEditing = Boolean(providerCapabilities?.[provider]?.supportsMessageEditing);
   const supportsSessionForking = Boolean(providerCapabilities?.[provider]?.supportsSessionForking);
+  const supportsCompaction = Boolean(providerCapabilities?.[provider]?.supportsCompaction);
 
   const resolvePermissionModeForProvider = useCallback((
     targetProvider: LLMProvider,
@@ -901,6 +918,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     selectPermissionMode,
     cyclePermissionMode,
     applyPlanModeChange,
+    resolvePlanReturnMode,
     providerModelCatalog,
     providerModelsLoading,
     providerModelActions,
@@ -909,5 +927,6 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     resolvePermissionModeForProvider,
     supportsMessageEditing,
     supportsSessionForking,
+    supportsCompaction,
   };
 }

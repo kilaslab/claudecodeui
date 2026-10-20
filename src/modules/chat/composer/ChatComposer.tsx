@@ -32,6 +32,7 @@ import ComposerAttachment from '@/modules/chat/composer/ComposerAttachment';
 import VoiceInputButton from '@/modules/chat/composer/VoiceInputButton';
 import PermissionRequestsBanner from '@/modules/chat/composer/PermissionRequestsBanner';
 import TokenUsageSummary from '@/modules/chat/composer/TokenUsageSummary';
+import CompactButton from '@/modules/chat/composer/CompactButton';
 import QueuedMessageCard from '@/modules/chat/composer/QueuedMessageCard';
 import ComposerSendModeMenu from '@/modules/chat/composer/ComposerSendModeMenu';
 import BackgroundSendDialog from '@/modules/chat/composer/BackgroundSendDialog';
@@ -70,6 +71,9 @@ type ChatComposerProps = {
   modelsLoading: boolean;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
+  /** Compacts the conversation; the button is offered only when the provider can compact. */
+  onCompact?: () => void;
+  canCompact?: boolean;
   slashCommandsCount: number;
   onToggleCommandMenu: () => void;
   hasInput: boolean;
@@ -158,6 +162,8 @@ export default function ChatComposer({
   modelsLoading,
   tokenBudget,
   onShowTokenUsage,
+  onCompact,
+  canCompact = false,
   slashCommandsCount,
   onToggleCommandMenu,
   hasInput,
@@ -489,6 +495,10 @@ export default function ChatComposer({
             )}
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+
+            {canCompact && onCompact && (
+              <CompactButton onCompact={onCompact} disabled={isLoading || isEditingSentMessage} />
+            )}
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}

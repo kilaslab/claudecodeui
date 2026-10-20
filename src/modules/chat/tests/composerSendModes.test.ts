@@ -36,7 +36,7 @@ const submit = async (mode?: 'steer' | 'interrupt') => {
       processingSessions: undefined,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as { type: string; options?: Record<string, unknown> }); },
+      sendMessage: (message) => { sent.push(message as { type: string; options?: Record<string, unknown> }); return true; },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
       setIsUserScrolledUp: () => undefined,
@@ -107,7 +107,7 @@ test('steering a queued draft sends the queued text and leaves the live composer
       processingSessions: undefined,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as { type: string; content?: string; options?: Record<string, unknown> }); },
+      sendMessage: (message) => { sent.push(message as { type: string; content?: string; options?: Record<string, unknown> }); return true; },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
       setIsUserScrolledUp: () => undefined,
@@ -172,7 +172,7 @@ const baseConfig = (overrides: Record<string, unknown> = {}) => ({
   processingSessions: undefined,
   canAbortSession: false,
   tokenBudget: null,
-  sendMessage: () => undefined,
+  sendMessage: () => true,
   scrollToBottom: () => undefined,
   addMessage: () => undefined,
   setIsUserScrolledUp: () => undefined,
@@ -231,7 +231,7 @@ test('handleSteerRejected merges into an already-queued message instead of overw
   const sent: Array<{ type: string; content?: string }> = [];
   const view = renderHook(() => useChatComposerState(baseConfig({
     isLoading: true,
-    sendMessage: (message: unknown) => { sent.push(message as { type: string; content?: string }); },
+    sendMessage: (message: unknown) => { sent.push(message as { type: string; content?: string }); return true; },
   }) as never));
 
   // Queue 'first' (plain submit, no mode, while a turn is running).
@@ -273,7 +273,7 @@ test('a provider without steer support (e.g. codex) queues a steer submit instea
   const view = renderHook(() => useChatComposerState(baseConfig({
     provider: 'codex',
     isLoading: true,
-    sendMessage: (message: unknown) => { sent.push(message as { type: string }); },
+    sendMessage: (message: unknown) => { sent.push(message as { type: string }); return true; },
   }) as never));
 
   assert.equal(view.result.current.canSteer, false, 'sanity: codex cannot steer');
@@ -296,9 +296,9 @@ test('a provider without steer support (e.g. codex) queues a steer submit instea
 });
 
 /**
- * Interrupting a queued draft while the session only has background work
- * left asks through the same dialog a plain send does, before the draft is
- * cleared: anything short of "Send anyway" leaves the draft queued.
+ * Sending a queued draft now while the session only has background work left
+ * goes to the process holding that work, which keeps running it: nothing is
+ * stopped, so nothing is asked, and the draft leaves the queue as it sends.
  */
 const backgroundOnly = new Map([[SESSION.id, {
   statusText: null,
@@ -316,7 +316,7 @@ const renderWithQueuedDraft = async (sent: Array<{ type: string; content?: strin
       useChatComposerState(baseConfig({
         isLoading,
         processingSessions,
-        sendMessage: (message: unknown) => { sent.push(message as { type: string; content?: string }); },
+        sendMessage: (message: unknown) => { sent.push(message as { type: string; content?: string }); return true; },
       }) as never),
     { initialProps: { isLoading: true } as QueuedDraftProps },
   );
@@ -330,36 +330,14 @@ const renderWithQueuedDraft = async (sent: Array<{ type: string; content?: strin
   return view;
 };
 
-test('interrupting a queued draft over background work asks first, and cancelling keeps the draft queued', async () => {
+test('sending a queued draft now over background work sends it, clears the queue and asks nothing', async () => {
   const sent: Array<{ type: string; content?: string }> = [];
   const view = await renderWithQueuedDraft(sent);
 
-  let pending: Promise<void> | undefined;
-  act(() => { pending = view.result.current.sendQueuedDraft('interrupt'); });
-  assert.deepEqual(view.result.current.backgroundSendPrompt?.work, ['Agent Survey the repo']);
-
-  await act(async () => {
-    view.result.current.resolveBackgroundSendPrompt('cancel');
-    await pending;
-  });
-
-  assert.equal(sent.length, 0, 'nothing is sent');
-  assert.equal(readQueuedMessage(SESSION.id)?.content, 'queued text', 'the draft stays queued');
-  assert.equal(view.result.current.queuedDraft?.content, 'queued text');
-});
-
-test('sending a queued draft anyway over background work sends it and clears the queue', async () => {
-  const sent: Array<{ type: string; content?: string }> = [];
-  const view = await renderWithQueuedDraft(sent);
-
-  let pending: Promise<void> | undefined;
-  act(() => { pending = view.result.current.sendQueuedDraft('interrupt'); });
-  await act(async () => {
-    view.result.current.resolveBackgroundSendPrompt('send');
-    await pending;
-  });
+  await act(async () => { await view.result.current.sendQueuedDraft('interrupt'); });
 
   await vi.waitFor(() => assert.equal(sent.filter((message) => message.type === 'chat.send').length, 1));
+  assert.equal(view.result.current.backgroundSendPrompt, null, 'no prompt: the work is not stopped');
   assert.equal(readQueuedMessage(SESSION.id), null, 'the queue is cleared once the draft is sent');
-  assert.equal(view.result.current.backgroundSendPrompt, null, 'the prompt was asked once, not again by the replay');
+  assert.equal(view.result.current.queuedDraft, null);
 });

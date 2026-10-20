@@ -45,6 +45,10 @@ function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
   const inputTokens = readUsageNumber(usage?.inputTokens ?? breakdown?.input);
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
   const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
+  // How full the window is; capped, since a reading taken before a compaction
+  // can briefly exceed the window it is measured against.
+  const windowTokens = readUsageNumber(usage?.total);
+  const percentUsed = windowTokens > 0 ? Math.min(100, Math.round((usedTokens / windowTokens) * 100)) : null;
 
   return (
     <button
@@ -61,6 +65,14 @@ function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
       <span className="hidden text-muted-foreground/70 sm:inline">
         {t('chat:misc.tokensLabel', { count: usedTokens })}
       </span>
+      {percentUsed !== null && (
+        <span
+          className="tabular-nums text-muted-foreground/70"
+          title={t('chat:misc.contextUsed', { percent: percentUsed, defaultValue: '{{percent}}% of the context window' })}
+        >
+          {percentUsed}%
+        </span>
+      )}
     </button>
   );
 }

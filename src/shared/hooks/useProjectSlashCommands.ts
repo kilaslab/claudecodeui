@@ -108,7 +108,7 @@ export function useProjectSlashCommands(
 
       try {
         const workspacePath = selectedProject.fullPath || selectedProject.path || '';
-        const response = await api.commands.list(workspacePath || selectedProject.path);
+        const response = await api.commands.list(workspacePath || selectedProject.path, provider);
 
         if (!response.ok) {
           throw new Error('Failed to fetch commands');

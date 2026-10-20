@@ -9,7 +9,7 @@ const LOCAL_ACTIVITY_GRACE_MS = 10_000;
 
 /**
  * The tasks as an identity, so two lists that say the same about the same
- * tasks compare equal — every field the pill, the strip and the composer
+ * tasks compare equal — every field the pill, the dock and the composer
  * read, not the ids alone, or a poll that learns a task is nested or corrects
  * its start would be dropped as a repeat.
  */

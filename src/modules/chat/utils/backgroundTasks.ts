@@ -69,7 +69,7 @@ const TASK_TYPE_BY_TOOL: Record<string, string> = { Workflow: 'local_workflow', 
  * The background tasks a transcript still has running, in the shape the
  * activity map holds them: what a session shows as background work once its
  * turn ends, until the running-sessions poll reports on it. The rows are the
- * ones the strip lists, minus any whose task nothing has named — those the
+ * ones the dock lists, minus any whose task nothing has named — those the
  * poll alone can report, and nothing here could stop.
  */
 export function collectRunningBackgroundTasks(messages: ChatMessage[]): BackgroundTaskSummary[] {

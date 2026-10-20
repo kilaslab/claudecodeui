@@ -18,7 +18,8 @@ type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 
 type WebSocketContextType = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  /** Sends a frame; returns false when the socket is not open and nothing was sent. */
+  sendMessage: (message: unknown) => boolean;
   /**
    * Subscribes to every websocket frame. Returns an unsubscribe function.
    *
@@ -185,13 +186,14 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     };
   }, [connect, isAuthLoading, user]); // reconnect after authentication or token refresh
 
-  const sendMessage = useCallback((message: unknown) => {
+  const sendMessage = useCallback((message: unknown): boolean => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(message));
-    } else {
-      console.warn('WebSocket not connected');
+      return true;
     }
+    console.warn('WebSocket not connected');
+    return false;
   }, []);
 
   const subscribe = useCallback((listener: ServerEventListener) => {

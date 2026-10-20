@@ -10,12 +10,13 @@ import type * as ChatDrafts from '@/shared/chatDrafts';
 import type { BackgroundSendChoice, PermissionMode, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
 
 /**
- * A session whose turn has ended with background work still running keeps
- * its composer usable — but a new turn replaces the CLI process that work
- * runs under, so the work is stopped or finishes where nothing listens. The
- * composer says so and asks before sending: send anyway, queue the message
- * until the work finishes (the server holds it while the work runs), or
- * cancel.
+ * A session whose turn has ended with background work still running keeps its
+ * composer usable, and a message sent to it goes straight to the process that
+ * holds the work: the work keeps running and reports back to it. Nothing is
+ * stopped, so nothing is asked. Only an edit of an earlier message rewinds the
+ * conversation and takes the process over, which stops the work — so only an
+ * edit asks first: send anyway, queue the message until the work finishes (the
+ * server holds it while the work runs), or cancel.
  */
 
 const { writeQueuedMessage } = vi.hoisted(() => ({ writeQueuedMessage: vi.fn() }));
@@ -69,14 +70,14 @@ const render = (processingSessions: SessionActivityMap) => {
       processingSessions,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as { type: string }); },
+      sendMessage: (message) => { sent.push(message as { type: string }); return true; },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
       setIsUserScrolledUp: () => undefined,
       setPendingPermissionRequests: () => undefined,
     }),
   );
-  const sends = () => sent.filter((message) => message.type === 'chat.send');
+  const sends = () => sent.filter((message) => message.type === 'chat.send' || message.type === 'chat.edit-send');
   return { view, sends };
 };
 
@@ -119,9 +120,28 @@ afterEach(() => {
   localStorage.clear();
 });
 
-test('sending on a session with background work asks first, naming the session\'s own tasks', async () => {
+test('a message sent on a session with background work goes straight out, and nothing is asked', async () => {
   const { view, sends } = render(backgroundOnly);
   await act(async () => { view.result.current.setInput('hello'); });
+
+  await act(async () => { await view.result.current.handleSubmit({ preventDefault: () => undefined } as never); });
+
+  assert.equal(view.result.current.backgroundSendPrompt, null, 'no prompt: the message does not stop the work');
+  assert.equal(sends().length, 1);
+  assert.equal(writeQueuedMessage.mock.calls.length, 0, 'and it is not queued behind the work');
+  assert.equal(view.result.current.input, '', 'the composer clears as for any send');
+});
+
+const startEdit = async (view: View) => {
+  await act(async () => {
+    view.result.current.beginEditMessage({ type: 'user', content: 'first draft', timestamp: new Date(), transcriptAnchorId: 'anchor-1' } as never);
+  });
+  await act(async () => { view.result.current.setInput('second draft'); });
+};
+
+test('editing an earlier message over background work asks first, naming the session\'s own tasks', async () => {
+  const { view, sends } = render(backgroundOnly);
+  await startEdit(view);
 
   const pending = startSubmit(view);
   await waitFor(() => assert.notEqual(view.result.current.backgroundSendPrompt, null));
@@ -137,22 +157,22 @@ test('sending on a session with background work asks first, naming the session\'
   });
 });
 
-test('cancel (the default answer to Enter, Esc or a click outside) sends nothing and keeps the draft', async () => {
+test('cancelling an edit prompt (the default answer to Enter, Esc or a click outside) sends nothing and keeps the draft', async () => {
   const { view, sends } = render(backgroundOnly);
-  await act(async () => { view.result.current.setInput('hello'); });
+  await startEdit(view);
 
   await submitAndAnswer(view, 'cancel');
 
   assert.equal(sends().length, 0, 'declined: nothing is sent');
   assert.equal(writeQueuedMessage.mock.calls.length, 0, 'and nothing is queued');
-  assert.equal(view.result.current.input, 'hello', 'and the draft stays in the composer');
+  assert.equal(view.result.current.input, 'second draft', 'and the draft stays in the composer');
   assert.equal(view.result.current.backgroundSendPrompt, null, 'and the prompt closes');
 });
 
-test('queue persists the message behind the work with its uploaded files, sends nothing, and clears the composer', async () => {
+test('queueing an edit persists it behind the work with its uploaded files, sends nothing, and clears the composer', async () => {
   const { view, sends } = render(backgroundOnly);
+  await startEdit(view);
   await act(async () => {
-    view.result.current.setInput('hello');
     view.result.current.setAttachedFiles([new File(['notes'], 'notes.txt', { type: 'text/plain' })]);
   });
 
@@ -160,32 +180,31 @@ test('queue persists the message behind the work with its uploaded files, sends 
 
   assert.equal(sends().length, 0, 'queued: nothing is sent now');
   assert.equal(uploads().length, 1, 'the files uploaded before the prompt are not uploaded again');
-  // Written synchronously at queue time (and again, identically, by the
-  // composer's persistence effect — the same as queueing during a turn).
   assert.ok(writeQueuedMessage.mock.calls.length >= 1);
   assert.equal(writeQueuedMessage.mock.calls[0]?.[0], 'session-1');
   const stored = readQueuedMessage('session-1');
-  assert.equal(stored?.content, 'hello');
+  assert.equal(stored?.content, 'second draft');
   assert.deepEqual(stored?.attachments, [UPLOADED]);
   assert.equal(stored?.options?.model, 'test-model');
-  assert.equal(view.result.current.queuedDraft?.content, 'hello', 'the queued card shows the message');
+  assert.equal(view.result.current.queuedDraft?.content, 'second draft', 'the queued card shows the message');
   assert.equal(view.result.current.input, '', 'and the composer is cleared, as when queueing during a turn');
   assert.equal(view.result.current.attachedFiles.length, 0);
 });
 
-test('send anyway sends the message', async () => {
+test('send anyway sends the edit', async () => {
   const { view, sends } = render(backgroundOnly);
-  await act(async () => { view.result.current.setInput('hello'); });
+  await startEdit(view);
 
   await submitAndAnswer(view, 'send');
 
-  assert.equal(sends().length, 1);
+  // The edit is its own frame, not a plain send.
+  assert.deepEqual(sends().map((message) => message.type), ['chat.edit-send']);
   assert.equal(writeQueuedMessage.mock.calls.length, 0);
 });
 
-test('a second submit while the prompt is open neither opens another prompt nor sends', async () => {
+test('a second submit while the edit prompt is open neither opens another prompt nor sends', async () => {
   const { view, sends } = render(backgroundOnly);
-  await act(async () => { view.result.current.setInput('hello'); });
+  await startEdit(view);
 
   const first = startSubmit(view);
   await waitFor(() => assert.notEqual(view.result.current.backgroundSendPrompt, null));
@@ -230,7 +249,7 @@ test('stopping a session\'s background work asks the server to stop the session'
       processingSessions: backgroundOnly,
       canAbortSession: false,
       tokenBudget: null,
-      sendMessage: (message) => { sent.push(message as Record<string, unknown>); },
+      sendMessage: (message) => { sent.push(message as Record<string, unknown>); return true; },
       scrollToBottom: () => undefined,
       addMessage: () => undefined,
       setIsUserScrolledUp: () => undefined,

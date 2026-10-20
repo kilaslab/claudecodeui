@@ -65,6 +65,7 @@ const FALLBACK_COMMANDS: CommandEntry[] = [
   { name: '/status', descriptionKey: 'chat:misc.fallbackCommands.status' },
   { name: '/memory', descriptionKey: 'chat:misc.fallbackCommands.memory' },
   { name: '/config', descriptionKey: 'chat:misc.fallbackCommands.config' },
+  { name: '/compact', descriptionKey: 'chat:misc.fallbackCommands.compact' },
   { name: '/help', descriptionKey: 'chat:misc.fallbackCommands.help' },
 ];
 

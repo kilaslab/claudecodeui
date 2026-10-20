@@ -111,11 +111,11 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <ChatMessageFiles files={message.files} />
             )}
             {userCopyContent.trim().length > 0 || (!message.images?.length && !message.files?.length) ? (
-              <div className="group max-w-full rounded-2xl rounded-br-md border border-border/60 bg-muted/60 px-3 py-2 text-foreground shadow-sm dark:bg-gray-800/60 sm:px-4">
-                <div dir="auto" className="break-words font-serif text-sm">
+              <div className="group max-w-full rounded-2xl rounded-br-md border border-border/60 bg-muted/60 px-3 py-2 text-foreground shadow-sm sm:px-4">
+                <div dir="auto" className="break-words text-sm">
                   <Markdown
                     breaks
-                    className="prose prose-sm max-w-none font-serif dark:prose-invert"
+                    className="prose prose-sm max-w-none dark:prose-invert"
                   >
                     {message.content}
                   </Markdown>
@@ -157,7 +157,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             )}
           </div>
           {!isGrouped && (
-            <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex">
+            <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-sm text-primary-foreground sm:flex">
               U
             </div>
           )}
@@ -172,10 +172,10 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   ? 'animate-pulse bg-amber-400 dark:bg-amber-500'
                   : message.compact.phase === 'failed'
                     ? 'bg-red-400 dark:bg-red-500'
-                    : 'bg-gray-400 dark:bg-gray-500'
+                    : 'bg-muted-foreground/50'
               }`}
             />
-            <span className="text-xs text-gray-500 dark:text-gray-400">
+            <span className="text-xs text-muted-foreground">
               {message.content || t('chat:misc.compacted', 'Compacted')}
             </span>
           </div>
@@ -185,7 +185,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {t('chat:misc.compactionSummary', 'full summary')}
               </summary>
               <div className="mt-1">
-                <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                <Markdown className="prose prose-sm max-w-none dark:prose-invert">
                   {message.compactSummary}
                 </Markdown>
               </div>
@@ -197,7 +197,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
         <div className="w-full">
           <div className="flex items-center gap-2 py-0.5">
             <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskNotificationStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
-            <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
+            <span className="text-xs text-muted-foreground">{message.content}</span>
           </div>
         </div>
       ) : (
@@ -210,7 +210,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   !
                 </div>
               ) : message.type === 'tool' ? (
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gray-600 text-sm text-white dark:bg-gray-700">
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-secondary text-sm text-secondary-foreground">
                   🔧
                 </div>
               ) : (
@@ -218,7 +218,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                   <LLMProviderLogo provider={provider} className="h-full w-full" />
                 </div>
               )}
-              <div className="text-sm font-medium text-gray-900 dark:text-white">
+              <div className="text-sm font-medium text-foreground">
                 {message.type === 'error'
                   ? t('messageTypes.error')
                   : message.type === 'tool'
@@ -238,7 +238,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
             {message.isToolUse && message.toolName === 'Workflow' ? (
               /* A workflow launch owns its whole card too. The anchor is what
-                 the background-tasks strip scrolls to. */
+                 the dock's rows scroll to. */
               <div id={`tool-result-${message.toolId}`} className="scroll-mt-4">
                 <WorkflowPanel
                   toolInput={message.toolInput}
@@ -269,7 +269,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <>
                 <div className="flex flex-col">
                   <div className="flex flex-col">
-                    <Markdown className="prose prose-sm max-w-none font-serif dark:prose-invert">
+                    <Markdown className="prose prose-sm max-w-none dark:prose-invert">
                       {String(message.displayText || '')}
                     </Markdown>
                   </div>
@@ -278,7 +278,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 {message.toolInput && (
                   // Bash draws its output inside this row rather than in the
                   // result section below, so for a backgrounded command this is
-                  // the row the background-tasks strip scrolls to.
+                  // the row the dock's rows scroll to.
                   <div id={message.toolName === 'Bash' ? `tool-result-${message.toolId}` : undefined} className="scroll-mt-4">
                     <ToolRenderer
                       toolName={message.toolName || 'UnknownTool'}
@@ -328,7 +328,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               <Reasoning defaultOpen={isExporting}>
                 <ReasoningTrigger />
                 <ReasoningContent>
-                  <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
+                  <Markdown className="prose prose-sm max-w-none dark:prose-invert">
                     {message.content}
                   </Markdown>
                   {!isExporting && (
@@ -339,7 +339,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                 </ReasoningContent>
               </Reasoning>
             ) : (
-              <div dir="auto" className="text-sm text-gray-700 dark:text-gray-300">
+              <div dir="auto" className="text-sm text-foreground/85">
                 {/* Reasoning accordion */}
                 {showThinking && message.reasoning && (
                   <Reasoning className="mb-3" defaultOpen={false}>
@@ -392,7 +392,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     <StreamingMarkdown
                       content={content}
                       isStreaming={Boolean(message.isStreaming)}
-                      className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                      className="prose prose-sm max-w-none dark:prose-invert"
                     />
                   ) : (
                     <div className="whitespace-pre-wrap">
@@ -410,7 +410,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
             )}
 
             {(shouldShowAssistantCopyControl || !isGrouped) && (
-              <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-gray-400 dark:text-gray-500">
+              <div className="mt-1 flex w-full items-center gap-2 text-[11px] text-muted-foreground/70">
                 {shouldShowAssistantCopyControl && (
                   <MessageCopyControl content={assistantCopyContent} messageType="assistant" />
                 )}

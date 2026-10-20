@@ -22,7 +22,7 @@ type WorkspaceMainProps = {
   activeTab: AppTab;
   setActiveTab: Dispatch<SetStateAction<AppTab>>;
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;

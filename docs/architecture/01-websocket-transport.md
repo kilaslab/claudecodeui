@@ -191,7 +191,7 @@ throws is answered with `INTERNAL_ERROR`.**
 
 All six are built in exactly three client files: the composer builds sends, aborts and
 permission answers (`useChatComposerState.ts:825-837`, `:1121-1124`, `:1149-1156`),
-`chat.stop-task` is built by the background-tasks strip's ✕ (`BackgroundTasksStrip.tsx`), and
+`chat.stop-task` is built by the stop icon of a subagent row in the dock (`dock/DockSubagentRow.tsx`), and
 `chat.subscribe` is built in `useChatSessionState.ts:668-674` and
 `ChatInterface.tsx:267-273`.
 

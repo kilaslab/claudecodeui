@@ -960,6 +960,59 @@ export type PermissionPanelProps = {
 
 // ---------------------------
 
+//----------------- SESSION DOCK ------------
+
+/** What a roster row stands for: a subagent, a workflow run, or a command running in the background. */
+export type SessionRosterKind = 'agent' | 'workflow' | 'command';
+
+/** What one roster row has to say about how far it has got, as raw facts the dock words (it owns the translations): tools used, agents finished of a workflow, the one it is on, the CLI's own summary, and the tool an agent is in the middle of. */
+export type SessionRosterProgress = {
+  toolUses?: number;
+  agentsFinished?: number;
+  agentsTotal?: number;
+  currentAgent?: string;
+  summary?: string;
+  lastTool?: string;
+};
+
+/** One subagent, workflow or background command of the session as the right-hand dock lists it. Read from the launch row when it is loaded, from the activity map when it is not; use it to draw a row and to address the row's actions (reveal, inspect, stop). */
+export type SessionRosterEntry = {
+  /** Stable across renders: the launch tool call's id. */
+  key: string;
+  kind: SessionRosterKind;
+  /** What the launch was asked to do, in one line. */
+  name: string;
+  status: BackgroundTaskStatus;
+  progress: SessionRosterProgress;
+  /** Epoch ms the work started, which a running row counts from. */
+  startedAt: number | null;
+  /** The id stopping it addresses; absent until the CLI has named the task, and for a foreground agent. */
+  taskId?: string;
+  /** The agent the inspector opens; absent for a command. */
+  agentId?: string;
+  /** The launch row, when it is loaded: what revealing the card in the transcript needs. */
+  message?: ChatMessage;
+  /** Launched by one of the session's agents, so its row is in that agent's transcript. */
+  nested?: boolean;
+};
+
+/** The session's work, split into what is still going and what has settled (newest first). */
+export type SessionRoster = {
+  running: SessionRosterEntry[];
+  finished: SessionRosterEntry[];
+};
+
+/** The session's current checklist, the latest one the agent wrote, with its progress. */
+export type SessionChecklist = {
+  todos: TodoItem[];
+  completed: number;
+  total: number;
+  /** The step in flight, which a collapsed checklist names. */
+  active: TodoItem | null;
+};
+
+// ---------------------------
+
 //----------------- CODE EDITOR ------------
 
 /** The before/after strings of a pending edit attached to a file opened in the code editor, used to drive the editor's inline merge/diff view; extra keys are tolerated because it comes straight from tool payloads. */
@@ -1375,7 +1428,8 @@ export type WizardFormState = {
 /** The shared WebSocket connection and its send function, threaded through the workspace tree so descendants can exchange live session messages. */
 export type RealtimeProps = {
   ws: WebSocket | null;
-  sendMessage: (message: unknown) => void;
+  /** Sends a frame; returns false when the socket is not open and nothing was sent. */
+  sendMessage: (message: unknown) => boolean;
 };
 
 /** Everything the project workspace shell and its regions need from the route: the realtime connection plus the current viewport mode and the router's navigate function. */

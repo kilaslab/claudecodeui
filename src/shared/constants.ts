@@ -191,6 +191,16 @@ export const SETTING_ROW_CLASS =
 
 // ---------------------------
 
+//----------------- CHAT SESSION DOCK ------------
+
+/** DOM id of the chat's right-hand dock of tasks and subagents, which the capsules that open it point `aria-controls` at. */
+export const SESSION_DOCK_ELEMENT_ID = 'session-dock';
+
+/** Width in pixels of the chat area below which the dock opens as a sheet over the transcript instead of a column beside it, so an open dock never leaves the transcript and composer cramped. */
+export const SESSION_DOCK_COLUMN_MIN_WIDTH = 760;
+
+// ---------------------------
+
 //----------------- TERMINAL TIMING ------------
 
 /**

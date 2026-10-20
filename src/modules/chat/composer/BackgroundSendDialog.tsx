@@ -48,7 +48,7 @@ export default function BackgroundSendDialog({ prompt, onResolve }: BackgroundSe
 
         <p id="background-send-dialog-description" className="mt-3 text-sm text-muted-foreground">
           {t('claudeStatus.backgroundTask.prompt.description', {
-            defaultValue: 'A new message starts a new turn, which stops that work; anything it has not reported yet is lost. Queue the message to send it when the work finishes.',
+            defaultValue: 'Editing a message replaces the conversation from that point and stops that work; anything it has not reported yet is lost. Queue the edit to send it when the work finishes.',
           })}
         </p>
 
