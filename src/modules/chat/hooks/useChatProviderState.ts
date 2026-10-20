@@ -45,6 +45,13 @@ const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-
 const prePlanModeStorageKey = (sessionId: string): string => `permissionMode-preplan-${sessionId}`;
 
 /**
+ * The same for a provider, kept like the per-provider mode itself: a brand-new
+ * chat has no session id yet when plan mode is picked for it, so its way out
+ * is read from here until the session has one of its own.
+ */
+const providerPrePlanModeStorageKey = (provider: LLMProvider): string => `permissionMode-preplan-last-${provider}`;
+
+/**
  * The permission mode stored for a session: its own choice, else the last mode
  * picked for the provider — a brand-new chat only receives its session id
  * after the first send, so without that fallback the mode chosen beforehand
@@ -443,9 +450,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   const selectPermissionMode = useCallback((nextMode: PermissionMode) => {
     // Entering plan mode remembers the mode it leaves, which an approved plan
-    // returns to (applyPlanModeChange).
-    if (nextMode === 'plan' && permissionMode !== 'plan' && selectedSession?.id) {
-      localStorage.setItem(prePlanModeStorageKey(selectedSession.id), permissionMode);
+    // returns to (applyPlanModeChange), per provider as well as per session.
+    if (nextMode === 'plan' && permissionMode !== 'plan') {
+      localStorage.setItem(providerPrePlanModeStorageKey(provider), permissionMode);
+      if (selectedSession?.id) {
+        localStorage.setItem(prePlanModeStorageKey(selectedSession.id), permissionMode);
+      }
     }
     setPermissionMode(nextMode);
 
@@ -460,15 +470,15 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   /**
    * The mode an approved plan returns a session to: the one it had before
-   * plan mode was entered, else the provider's default. Applied by
+   * plan mode was entered (for a chat with no session yet, the one the
+   * provider had), else the provider's default. Applied by
    * applyPlanModeChange when the plan is approved, and sent with every plan
    * mode message so the running turn follows the composer.
    */
   const resolvePlanReturnMode = useCallback((sessionId: string | null, sessionProvider: LLMProvider = provider): PermissionMode => {
     const validModes = getPermissionModesForProvider(sessionProvider);
-    const prePlanMode = sessionId
-      ? localStorage.getItem(prePlanModeStorageKey(sessionId)) as PermissionMode | null
-      : null;
+    const prePlanMode = ((sessionId ? localStorage.getItem(prePlanModeStorageKey(sessionId)) : null)
+      ?? localStorage.getItem(providerPrePlanModeStorageKey(sessionProvider))) as PermissionMode | null;
     return prePlanMode && prePlanMode !== 'plan' && validModes.includes(prePlanMode)
       ? prePlanMode
       : getDefaultPermissionModeForProvider(sessionProvider);

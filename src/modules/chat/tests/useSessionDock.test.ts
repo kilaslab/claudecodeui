@@ -56,14 +56,14 @@ describe('useSessionDock', () => {
   it('is a column where the chat area is wide enough, and a sheet where it is not', () => {
     const wide = rowOfWidth(SESSION_DOCK_COLUMN_MIN_WIDTH);
     const narrow = rowOfWidth(SESSION_DOCK_COLUMN_MIN_WIDTH - 1);
-    expect(renderHook(() => useSessionDock(wide)).result.current.layout).toBe('column');
-    expect(renderHook(() => useSessionDock(narrow)).result.current.layout).toBe('sheet');
+    expect(renderHook(() => useSessionDock(wide, 'session-1', true)).result.current.layout).toBe('column');
+    expect(renderHook(() => useSessionDock(narrow, 'session-1', true)).result.current.layout).toBe('sheet');
   });
 
   it('follows the chat area as it is resized, whatever the window does', () => {
     // The row element is the component's own, one for its whole life.
     const row = rowOfWidth(1200);
-    const { result } = renderHook(() => useSessionDock(row));
+    const { result } = renderHook(() => useSessionDock(row, 'session-1', true));
     expect(result.current.layout).toBe('column');
 
     resizeTo(500);
@@ -76,12 +76,12 @@ describe('useSessionDock', () => {
     vi.stubGlobal('ResizeObserver', undefined);
 
     const row = rowOfWidth(300);
-    expect(renderHook(() => useSessionDock(row)).result.current.layout).toBe('column');
+    expect(renderHook(() => useSessionDock(row, 'session-1', true)).result.current.layout).toBe('column');
   });
 
   it('remembers the column being open, and never restores the sheet', () => {
     const wideRow = rowOfWidth(1200);
-    const column = renderHook(() => useSessionDock(wideRow));
+    const column = renderHook(() => useSessionDock(wideRow, 'session-1', true));
     act(() => column.result.current.toggle());
     expect(column.result.current.isOpen).toBe(true);
     expect(localStorage.getItem('chat.sessionDock.open')).toBe('true');
@@ -90,7 +90,7 @@ describe('useSessionDock', () => {
     // The next visit, in a chat area too narrow for the column: the sheet starts
     // closed even though the column was left open, and opening it leaves no trace.
     const narrowRow = rowOfWidth(400);
-    const sheet = renderHook(() => useSessionDock(narrowRow));
+    const sheet = renderHook(() => useSessionDock(narrowRow, 'session-1', true));
     expect(sheet.result.current.layout).toBe('sheet');
     expect(sheet.result.current.isOpen).toBe(false);
     act(() => sheet.result.current.toggle());
@@ -100,9 +100,29 @@ describe('useSessionDock', () => {
     expect(localStorage.getItem('chat.sessionDock.open')).toBe('true');
   });
 
+  it('closes the sheet for another session, or once there is nothing left in it', () => {
+    // Left open, it came back over the transcript, and took focus from the
+    // composer, when the next row appeared.
+    const row = rowOfWidth(400);
+    const { result, rerender } = renderHook(
+      ({ session, hasContent }: { session: string; hasContent: boolean }) => useSessionDock(row, session, hasContent),
+      { initialProps: { session: 'session-1', hasContent: true } },
+    );
+    act(() => result.current.toggle());
+    expect(result.current.isOpen).toBe(true);
+
+    rerender({ session: 'session-2', hasContent: true });
+    expect(result.current.isOpen).toBe(false);
+
+    act(() => result.current.toggle());
+    rerender({ session: 'session-2', hasContent: false });
+    rerender({ session: 'session-2', hasContent: true });
+    expect(result.current.isOpen).toBe(false);
+  });
+
   it('stops watching when it goes away', () => {
     const row = rowOfWidth(1200);
-    const { unmount } = renderHook(() => useSessionDock(row));
+    const { unmount } = renderHook(() => useSessionDock(row, 'session-1', true));
     expect(observers.filter((observer) => !observer.disconnected)).toHaveLength(1);
 
     unmount();

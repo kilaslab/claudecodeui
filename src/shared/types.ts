@@ -845,8 +845,8 @@ export type QueuedDraft = {
   options?: QueuedSendOptions;
 };
 
-/** The answer to the prompt shown when sending over a session's background work: send now (stopping that work), queue the message until the work finishes, or do nothing. */
-export type BackgroundSendChoice = 'send' | 'queue' | 'cancel';
+/** The answer to the prompt shown when an edit would replace the process a session's background work runs in: send the edit now (stopping that work), or do nothing. */
+export type BackgroundSendChoice = 'send' | 'cancel';
 
 /** An open background-work send prompt, listing the session's own background tasks as display strings. */
 export type BackgroundSendPrompt = {

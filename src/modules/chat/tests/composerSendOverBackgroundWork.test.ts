@@ -5,7 +5,7 @@ import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import '@/modules/i18n';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
-import { clearQueuedMessage, readQueuedMessage } from '@/shared/chatDrafts';
+import { clearQueuedMessage } from '@/shared/chatDrafts';
 import type * as ChatDrafts from '@/shared/chatDrafts';
 import type { BackgroundSendChoice, PermissionMode, Project, ProjectSession, SessionActivityMap } from '@/shared/types';
 
@@ -50,8 +50,6 @@ const backgroundOnly: SessionActivityMap = new Map([[
     ],
   },
 ]]);
-
-const uploads = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes('/api/assets/files'));
 
 const render = (processingSessions: SessionActivityMap) => {
   const sent: Array<{ type: string }> = [];
@@ -167,28 +165,6 @@ test('cancelling an edit prompt (the default answer to Enter, Esc or a click out
   assert.equal(writeQueuedMessage.mock.calls.length, 0, 'and nothing is queued');
   assert.equal(view.result.current.input, 'second draft', 'and the draft stays in the composer');
   assert.equal(view.result.current.backgroundSendPrompt, null, 'and the prompt closes');
-});
-
-test('queueing an edit persists it behind the work with its uploaded files, sends nothing, and clears the composer', async () => {
-  const { view, sends } = render(backgroundOnly);
-  await startEdit(view);
-  await act(async () => {
-    view.result.current.setAttachedFiles([new File(['notes'], 'notes.txt', { type: 'text/plain' })]);
-  });
-
-  await submitAndAnswer(view, 'queue');
-
-  assert.equal(sends().length, 0, 'queued: nothing is sent now');
-  assert.equal(uploads().length, 1, 'the files uploaded before the prompt are not uploaded again');
-  assert.ok(writeQueuedMessage.mock.calls.length >= 1);
-  assert.equal(writeQueuedMessage.mock.calls[0]?.[0], 'session-1');
-  const stored = readQueuedMessage('session-1');
-  assert.equal(stored?.content, 'second draft');
-  assert.deepEqual(stored?.attachments, [UPLOADED]);
-  assert.equal(stored?.options?.model, 'test-model');
-  assert.equal(view.result.current.queuedDraft?.content, 'second draft', 'the queued card shows the message');
-  assert.equal(view.result.current.input, '', 'and the composer is cleared, as when queueing during a turn');
-  assert.equal(view.result.current.attachedFiles.length, 0);
 });
 
 test('send anyway sends the edit', async () => {

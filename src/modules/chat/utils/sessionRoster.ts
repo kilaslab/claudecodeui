@@ -176,33 +176,112 @@ export function buildSessionRoster(messages: ChatMessage[], tasks: BackgroundTas
 }
 
 /**
- * The checklist the agent is working through: the latest one it wrote (every
- * provider's running checklist normalizes onto the `TodoWrite` row), or null
- * when it has written none or an empty one.
+ * Claude's incremental task tracker. The history reader rewrites its calls onto
+ * `TodoWrite` snapshots (message-unification.ts on the server), but the calls a
+ * live turn streams arrive as they are, until the history is read again.
+ */
+const TASK_TRACKER_TOOLS = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']);
+
+const readText = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
+const readRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+/** The tracker's statuses already match the checklist's; anything else is pending. */
+const readTaskStatus = (value: unknown): string => (value === 'in_progress' || value === 'completed' ? value : 'pending');
+
+function readTodos(message: ChatMessage): TodoItem[] {
+  const input = readLaunchInput(message);
+  return Array.isArray(input.todos)
+    ? input.todos.filter((todo): todo is TodoItem => Boolean(todo) && typeof (todo as TodoItem).content === 'string')
+    : [];
+}
+
+/**
+ * Replays one task-tracker call onto the list, as the server's history reader
+ * does: a listing restates the whole tracker, a result that carries its task
+ * is keyed by the id the tracker assigned, and anything else by its input.
+ */
+function applyTaskCall(entries: Map<string, TodoItem>, message: ChatMessage): void {
+  const input = readLaunchInput(message);
+  const result = readRecord(message.toolResult?.toolUseResult);
+  const upsert = (task: Record<string, unknown>, content: string, activeForm: string) => {
+    const id = readText(task.id);
+    if (!id) {
+      return;
+    }
+    const existing = entries.get(id);
+    entries.set(id, {
+      id,
+      content: readText(task.subject) || content || existing?.content || id,
+      status: task.status === undefined ? existing?.status ?? 'pending' : readTaskStatus(task.status),
+      activeForm: activeForm || existing?.activeForm,
+    });
+  };
+
+  if (Array.isArray(result?.tasks)) {
+    // The listing omits the present-tense wording; keep what is known of it.
+    const known = new Map(entries);
+    entries.clear();
+    for (const listed of result.tasks) {
+      const task = readRecord(listed);
+      if (task) {
+        upsert(task, '', known.get(readText(task.id))?.activeForm ?? '');
+      }
+    }
+    return;
+  }
+
+  const single = readRecord(result?.task);
+  if (single) {
+    upsert(single, readText(input.subject), readText(input.activeForm));
+    return;
+  }
+
+  // A create whose result has not arrived yet is keyed by its tool call id.
+  const id = readText(input.taskId) || readText(message.toolId);
+  if (id) {
+    upsert({ id, subject: input.subject, status: input.status }, '', readText(input.activeForm));
+  }
+}
+
+/**
+ * The checklist the agent is working through: the latest whole list it wrote
+ * (every provider's running checklist normalizes onto the `TodoWrite` row),
+ * then whatever Claude's task tracker changed after it in the live turn. Null
+ * when there is none, or it is empty.
  *
  * Used by chat's SessionDock and DockCapsules.
  */
 export function readSessionChecklist(messages: ChatMessage[]): SessionChecklist | null {
+  let todos: TodoItem[] = [];
+  let firstAfterSnapshot = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (!message.isToolUse || message.toolName !== 'TodoWrite') {
-      continue;
+    if (message.isToolUse && message.toolName === 'TodoWrite') {
+      todos = readTodos(message);
+      firstAfterSnapshot = index + 1;
+      break;
     }
-
-    const input = readLaunchInput(message);
-    const todos = Array.isArray(input.todos)
-      ? input.todos.filter((todo): todo is TodoItem => Boolean(todo) && typeof (todo as TodoItem).content === 'string')
-      : [];
-    if (todos.length === 0) {
-      return null;
-    }
-
-    return {
-      todos,
-      completed: todos.filter((todo) => todo.status === 'completed').length,
-      total: todos.length,
-      active: todos.find((todo) => todo.status === 'in_progress') ?? null,
-    };
   }
-  return null;
+
+  const trackerCalls = messages
+    .slice(firstAfterSnapshot)
+    .filter((message) => message.isToolUse && TASK_TRACKER_TOOLS.has(message.toolName ?? ''));
+  if (trackerCalls.length > 0) {
+    const entries = new Map(todos.map((todo, index) => [todo.id ?? `todo-${index}`, todo]));
+    for (const message of trackerCalls) {
+      applyTaskCall(entries, message);
+    }
+    todos = [...entries.values()];
+  }
+
+  if (todos.length === 0) {
+    return null;
+  }
+
+  return {
+    todos,
+    completed: todos.filter((todo) => todo.status === 'completed').length,
+    total: todos.length,
+    active: todos.find((todo) => todo.status === 'in_progress') ?? null,
+  };
 }

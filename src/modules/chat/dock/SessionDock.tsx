@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -32,11 +32,14 @@ type SessionDockProps = {
  * checklist and its subagents in one card that floats on the right, where the
  * transcript's scrolling and its own sticky headers cannot cover it. As a sheet
  * it behaves as the modal it looks like: it takes focus, Escape closes it
- * ahead of the transcript's Escape-to-stop, and showing a row in the
- * transcript closes it so the row can be seen. Opened from DockCapsules;
- * closing it never stops anything.
+ * ahead of the transcript's Escape-to-stop, closing it hands focus back to
+ * where it was, and showing a row in the transcript closes it so the row can
+ * be seen. Opened from DockCapsules; closing it never stops anything.
+ *
+ * Memoized, with stable row handlers: the chat view re-renders on every
+ * keystroke and streamed token, and the dock only needs to when its rows do.
  */
-export function SessionDock({ roster, checklist, layout, sessionId, sendMessage, onReveal, onLoadAll, onClose }: SessionDockProps) {
+export const SessionDock = memo(function SessionDock({ roster, checklist, layout, sessionId, sendMessage, onReveal, onLoadAll, onClose }: SessionDockProps) {
   const { t } = useTranslation('chat');
   const isSheet = layout === 'sheet';
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -59,6 +62,9 @@ export function SessionDock({ roster, checklist, layout, sessionId, sendMessage,
     if (!isSheet) {
       return undefined;
     }
+    // Focus goes back where it came from (the capsule that opened the sheet)
+    // when the sheet closes, rather than falling to the page.
+    const openedFrom = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
     // On the window, in the capture phase, like the agent inspector's: ahead of
     // the transcript's document-level Escape, which would stop the running turn.
@@ -70,21 +76,31 @@ export function SessionDock({ roster, checklist, layout, sessionId, sendMessage,
       onClose();
     };
     window.addEventListener('keydown', handleKeyDown, { capture: true });
-    return () => window.removeEventListener('keydown', handleKeyDown, { capture: true });
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, { capture: true });
+      // Only when nothing else took focus meanwhile: a removed sheet leaves it on the page.
+      const isFocusLost = !document.activeElement || document.activeElement === document.body;
+      if (isFocusLost && openedFrom?.isConnected) {
+        openedFrom.focus();
+      }
+    };
   }, [isSheet, onClose]);
 
   const finished = roster.finished.slice(0, finishedLimit);
   const hiddenFinished = roster.finished.length - finished.length;
   // A sheet covers what a row would show, so acting on a row dismisses it.
-  const leaveSheet = isSheet ? onClose : undefined;
-  const revealRow = (message: ChatMessage) => {
+  const revealRow = useCallback((message: ChatMessage) => {
     onReveal(message);
-    leaveSheet?.();
-  };
-  const loadAllRows = () => {
+    if (isSheet) {
+      onClose();
+    }
+  }, [isSheet, onClose, onReveal]);
+  const loadAllRows = useCallback(() => {
     onLoadAll();
-    leaveSheet?.();
-  };
+    if (isSheet) {
+      onClose();
+    }
+  }, [isSheet, onClose, onLoadAll]);
   const rowProps = { sessionId, sendMessage, onReveal: revealRow, onLoadAll: loadAllRows };
 
   return (
@@ -176,4 +192,4 @@ export function SessionDock({ roster, checklist, layout, sessionId, sendMessage,
       </aside>
     </>
   );
-}
+});

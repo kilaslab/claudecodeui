@@ -223,3 +223,22 @@ test('a plan change for a session that is not on screen is there when it is open
   rerender({ sessionId: 'other-session' });
   assert.equal(result.current.permissionMode, 'plan');
 });
+
+test('a new chat put in plan mode before it has a session returns to the mode it had', async () => {
+  // The session id arrives with the first send, after plan mode was picked;
+  // the way out was only kept per session, so the plan returned to Default.
+  const { useChatProviderState } = await import('@/modules/chat/hooks/useChatProviderState');
+  const { result, rerender } = renderHook(
+    ({ session }: { session: ProjectSession | null }) => useChatProviderState({ selectedSession: session, selectedProject: null }),
+    { initialProps: { session: null as ProjectSession | null } },
+  );
+  act(() => { result.current.selectPermissionMode('auto'); });
+  act(() => { result.current.selectPermissionMode('plan'); });
+  assert.equal(result.current.resolvePlanReturnMode(null), 'auto', 'the first message names Auto as the way out');
+
+  rerender({ session: { id: 'new-session', __provider: 'claude' } as unknown as ProjectSession });
+  assert.equal(result.current.permissionMode, 'plan');
+
+  act(() => { result.current.applyPlanModeChange('new-session', 'exited'); });
+  assert.equal(result.current.permissionMode, 'auto');
+});

@@ -83,6 +83,16 @@ test('the Compact button sends /compact and leaves the draft alone', async () =>
   assert.equal(view.result.current.input, 'half a thought');
 });
 
+test('a click event handed to compactConversation is not taken for instructions', async () => {
+  // A button that passes its handler straight to onClick calls it with the
+  // event; `instructions?.trim()` then threw and nothing was sent.
+  const { view, chatSends } = renderComposer();
+
+  await act(async () => { view.result.current.compactConversation({ type: 'click' } as never); });
+
+  await waitFor(() => assert.deepEqual(chatSends().map((message) => message.content), ['/compact']));
+});
+
 test('typing /compact with instructions compacts with those instructions', async () => {
   const { view, chatSends } = renderComposer();
   await waitFor(() => assert.equal(view.result.current.slashCommandsCount, 1));

@@ -22,10 +22,12 @@ describe('the background-work send dialog', () => {
     render(<BackgroundSendDialog prompt={PROMPT} onResolve={onResolve} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Queue' }));
     fireEvent.click(screen.getByRole('button', { name: 'Send anyway' }));
 
-    expect(onResolve.mock.calls).toEqual([['cancel'], ['queue'], ['send']]);
+    expect(onResolve.mock.calls).toEqual([['cancel'], ['send']]);
+    // An edit cannot be queued: a queued message is sent as a new one, and
+    // would not rewind anything.
+    expect(screen.queryByRole('button', { name: 'Queue' })).toBeNull();
   });
 
   it('cancels on Escape and on a click outside', () => {

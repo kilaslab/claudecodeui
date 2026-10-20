@@ -19,6 +19,12 @@ test('the meter shows how much of the context window is used', () => {
   assert.match(container.textContent ?? '', /25%/);
 });
 
+test('the meter shows no percentage for a running total, which is not the context in use', () => {
+  const { container } = render(<TokenUsageSummary usage={{ used: 900_000, total: 200_000 }} measuresContext={false} />);
+
+  assert.doesNotMatch(container.textContent ?? '', /%/);
+});
+
 test('the meter shows no percentage when the window is unknown', () => {
   const { container } = render(<TokenUsageSummary usage={{ used: 50_000 }} />);
 
@@ -37,7 +43,9 @@ test('the compact button compacts when pressed', () => {
 
   fireEvent.click(getByRole('button', { name: /compact/i }));
 
-  assert.equal(onCompact.mock.calls.length, 1);
+  // With no arguments: the handler takes optional instructions, and the click
+  // event was once passed through as them, which threw before anything was sent.
+  assert.deepEqual(onCompact.mock.calls, [[]]);
 });
 
 test('the compact button does nothing while a response is running', () => {

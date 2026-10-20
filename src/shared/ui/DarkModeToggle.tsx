@@ -44,7 +44,8 @@ export function DarkModeToggle({
       <span
         className={cn(
           'flex h-5 w-5 transform items-center justify-center rounded-full shadow-sm transition-transform duration-200',
-          isEnabled ? 'translate-x-[22px] bg-white' : 'translate-x-[2px] bg-foreground/60 dark:bg-foreground/80',
+          // The knob takes the colour that reads on the track: white on near-black, near-black on the light track of dark mode.
+          isEnabled ? 'translate-x-[22px] bg-primary-foreground' : 'translate-x-[2px] bg-foreground/60 dark:bg-foreground/80',
         )}
       >
         {isEnabled ? (

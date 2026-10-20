@@ -295,9 +295,8 @@
       "count": "{{count}} tasks",
       "prompt": {
         "title": "This session still has background work running",
-        "description": "Editing a message replaces the conversation from that point and stops that work; anything it has not reported yet is lost. Queue the edit to send it when the work finishes.",
+        "description": "Editing a message replaces the conversation from that point and stops that work; anything it has not reported yet is lost. To keep it, cancel and edit once the work finishes.",
         "cancel": "Cancel",
-        "queue": "Queue",
         "sendAnyway": "Send anyway"
       }
     },

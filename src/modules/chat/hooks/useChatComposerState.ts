@@ -473,7 +473,7 @@ export function useChatComposerState({
       addMessage({ type: 'assistant', content: refusal, timestamp: Date.now() });
       return;
     }
-    const trimmed = instructions?.trim();
+    const trimmed = typeof instructions === 'string' ? instructions.trim() : '';
     void handleSubmitRef.current?.(createFakeSubmitEvent(), undefined, {
       skipCommandInterception: true,
       contentOverride: trimmed ? `/compact ${trimmed}` : '/compact',
@@ -1256,28 +1256,18 @@ export function useChatComposerState({
       // an earlier message rewinds the conversation, and that replaces the
       // process: the agents, workflows and commands it still has going are
       // stopped, or finish where nothing is listening. Sending is the user's
-      // call, but not one to make for them — and queueing behind the work,
-      // which the server holds until it finishes, is the safe alternative.
+      // call, but not one to make for them. (There is no queueing an edit: a
+      // queued message is sent as a new one, so it would not rewind anything.)
       const backgroundActivity = processingSessionsRef.current?.get(targetSessionId);
       if (backgroundActivity?.background && activeEditAnchorId) {
         const work = ownBackgroundTasks(backgroundActivity.tasks ?? [])
           .map((task) => describeBackgroundTask(task, t));
         const choice = await askBeforeSendingOverBackgroundWork(work);
         if (choice !== 'send') {
-          // A replayed queued draft was cleared before this submit; either
-          // answer short of sending puts it back where it was.
+          // A replayed queued draft was cleared before this submit; declining
+          // puts it back where it was.
           if (queuedSubmission) {
             restoreQueuedSubmission(queuedSubmission);
-            return;
-          }
-          if (choice === 'queue') {
-            // Attachments were uploaded above; queue the same descriptors.
-            queueMessage({
-              content: currentInput,
-              attachments: currentAttachments,
-              uploadedAttachments,
-              options: buildSendOptions(currentInput),
-            }, targetSessionId);
           }
           return;
         }

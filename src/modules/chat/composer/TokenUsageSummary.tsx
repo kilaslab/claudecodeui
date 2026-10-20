@@ -4,6 +4,8 @@ import { useTranslation } from 'react-i18next';
 
 type TokenUsageSummaryProps = {
   usage: Record<string, unknown> | null;
+  /** Whether `used` is the context in use now, so a share of the window describes it. */
+  measuresContext?: boolean;
   onClick?: () => void;
 };
 
@@ -36,7 +38,7 @@ const readUsageNumber = (value: unknown) => {
  * Rendered by chat's ChatComposer to show the session's context-window usage
  * and open the detailed token breakdown on click.
  */
-function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
+function TokenUsageSummary({ usage, measuresContext = true, onClick }: TokenUsageSummaryProps) {
   const { t } = useTranslation();
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
@@ -48,7 +50,7 @@ function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
   // How full the window is; capped, since a reading taken before a compaction
   // can briefly exceed the window it is measured against.
   const windowTokens = readUsageNumber(usage?.total);
-  const percentUsed = windowTokens > 0 ? Math.min(100, Math.round((usedTokens / windowTokens) * 100)) : null;
+  const percentUsed = measuresContext && windowTokens > 0 ? Math.min(100, Math.round((usedTokens / windowTokens) * 100)) : null;
 
   return (
     <button

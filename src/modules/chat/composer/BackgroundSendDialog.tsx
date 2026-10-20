@@ -9,10 +9,11 @@ type BackgroundSendDialogProps = {
 };
 
 /**
- * Rendered by chat's ChatComposer when a message is sent to a session whose
- * turn has ended but whose background work is still running. Sending now
- * stops that work, so the choices are to send anyway, queue the message until
- * the work finishes, or cancel.
+ * Rendered by chat's ChatComposer when an edit of an earlier message is sent to
+ * a session whose background work is still running. The edit replaces the
+ * process that work runs in, which stops it, so the choices are to send the
+ * edit anyway or cancel (and edit once the work finishes). An ordinary message
+ * never asks: it goes to that process and the work keeps running.
  *
  * Cancel comes first in the DOM so Dialog's open-focus lands on it: an Enter
  * pressed right after the send that opened the prompt (a double Enter, a key
@@ -48,16 +49,13 @@ export default function BackgroundSendDialog({ prompt, onResolve }: BackgroundSe
 
         <p id="background-send-dialog-description" className="mt-3 text-sm text-muted-foreground">
           {t('claudeStatus.backgroundTask.prompt.description', {
-            defaultValue: 'Editing a message replaces the conversation from that point and stops that work; anything it has not reported yet is lost. Queue the edit to send it when the work finishes.',
+            defaultValue: 'Editing a message replaces the conversation from that point and stops that work; anything it has not reported yet is lost. To keep it, cancel and edit once the work finishes.',
           })}
         </p>
 
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <Button type="button" variant="outline" onClick={() => onResolve('cancel')}>
             {t('claudeStatus.backgroundTask.prompt.cancel', { defaultValue: 'Cancel' })}
-          </Button>
-          <Button type="button" variant="default" onClick={() => onResolve('queue')}>
-            {t('claudeStatus.backgroundTask.prompt.queue', { defaultValue: 'Queue' })}
           </Button>
           <Button type="button" variant="destructive" onClick={() => onResolve('send')}>
             {t('claudeStatus.backgroundTask.prompt.sendAnyway', { defaultValue: 'Send anyway' })}

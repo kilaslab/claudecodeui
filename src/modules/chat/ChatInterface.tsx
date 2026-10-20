@@ -439,12 +439,20 @@ function ChatInterface({
     const scheduled = await scheduleMessage({
       content,
       scheduledFor,
-      options: { model: currentProviderModel, effort: currentProviderEffort, permissionMode },
+      options: {
+        model: currentProviderModel,
+        effort: currentProviderEffort,
+        permissionMode,
+        // As for a message sent now: a plan it starts returns to the mode the composer showed.
+        ...(permissionMode === 'plan'
+          ? { planReturnMode: getPlanReturnPermissionMode(currentSessionId || selectedSession?.id || null) }
+          : {}),
+      },
     });
     if (scheduled) {
       setInput('');
     }
-  }, [currentProviderEffort, currentProviderModel, input, permissionMode, scheduleMessage, setInput]);
+  }, [currentProviderEffort, currentProviderModel, currentSessionId, getPlanReturnPermissionMode, input, permissionMode, scheduleMessage, selectedSession?.id, setInput]);
 
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,
@@ -494,7 +502,11 @@ function ChatInterface({
   const hasDockContent = Boolean(sessionChecklist) || sessionRoster.running.length + sessionRoster.finished.length > 0;
 
   const chatRowRef = useRef<HTMLDivElement>(null);
-  const { layout: dockLayout, isOpen: isDockOpen, toggle: toggleDock, close: closeDock } = useSessionDock(chatRowRef);
+  const { layout: dockLayout, isOpen: isDockOpen, toggle: toggleDock, close: closeDock } = useSessionDock(
+    chatRowRef,
+    selectedSession?.id || currentSessionId || null,
+    hasDockContent,
+  );
 
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
@@ -602,7 +614,6 @@ function ChatInterface({
                   leavesRoomForActivity={hasActivityIndicator}
                 />
 
-
                 <div className="relative flex-shrink-0">
                   {isUserScrolledUp && chatMessages.length > 0 && (
                     <div className={`pointer-events-none absolute left-0 right-0 z-20 flex justify-center ${scrollButtonOffsetClass}`}>
@@ -641,6 +652,8 @@ function ChatInterface({
                   onShowTokenUsage={showCostModal}
                   onCompact={compactConversation}
                   canCompact={supportsCompaction && chatMessages.length > 0 && Boolean(selectedSession?.id || currentSessionId)}
+                  // Codex reports the session's running total, which no share of the window describes.
+                  tokenBudgetMeasuresContext={provider !== 'codex'}
                   isEditingSentMessage={Boolean(editingAnchorId)}
                   onCancelEditMessage={cancelEditMessage}
                   scheduledMessages={scheduledMessages}
@@ -704,6 +717,8 @@ function ChatInterface({
 
               {isDockOpen && hasDockContent && (
                 <SessionDock
+                  // A session's own "Show more" does not carry over to the next.
+                  key={selectedSession?.id || currentSessionId || 'new-chat'}
                   roster={sessionRoster}
                   checklist={sessionChecklist}
                   layout={dockLayout}

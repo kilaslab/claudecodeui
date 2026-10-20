@@ -27,7 +27,8 @@ export default function SettingsToggle({ checked, onChange, ariaLabel, disabled 
       <span
         className={cn(
           'pointer-events-none inline-block h-5 w-5 rounded-full shadow-sm transition-transform duration-200',
-          checked ? 'translate-x-[22px] bg-white' : 'translate-x-[2px] bg-foreground/60 dark:bg-foreground/80',
+          // The knob takes the colour that reads on the track: white on near-black, near-black on the light track of dark mode.
+          checked ? 'translate-x-[22px] bg-primary-foreground' : 'translate-x-[2px] bg-foreground/60 dark:bg-foreground/80',
         )}
       />
     </button>

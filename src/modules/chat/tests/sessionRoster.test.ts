@@ -121,6 +121,37 @@ describe('readSessionChecklist', () => {
     assert.equal(readSessionChecklist([row])?.completed, 1);
   });
 
+  it('follows the task tracker a live turn streams, on top of the last whole list', () => {
+    // The history reader rewrites TaskCreate/TaskUpdate onto TodoWrite
+    // snapshots; a live turn's calls arrive raw until the history is read again.
+    const taskCall = (toolName: string, toolId: string, toolInput: Record<string, unknown>, toolUseResult?: unknown): ChatMessage => ({
+      type: 'assistant', isToolUse: true, toolName, toolId, timestamp: at(6), toolInput,
+      ...(toolUseResult ? { toolResult: { content: 'ok', isError: false, toolUseResult } } : {}),
+    });
+    const snapshot = checklistRow([], at(5));
+    snapshot.toolInput = { todos: [{ id: '1', content: 'Set up', status: 'in_progress' }] };
+
+    const checklist = readSessionChecklist([
+      snapshot,
+      taskCall('TaskUpdate', 'toolu_u1', { taskId: '1', status: 'completed' }),
+      taskCall('TaskCreate', 'toolu_c2', { subject: 'Build', activeForm: 'Building' }, { task: { id: '2', subject: 'Build' } }),
+      taskCall('TaskUpdate', 'toolu_u2', { taskId: '2', status: 'in_progress' }),
+    ]);
+
+    assert.deepEqual(checklist?.todos.map((todo) => [todo.content, todo.status]), [['Set up', 'completed'], ['Build', 'in_progress']]);
+    assert.equal(checklist?.completed, 1);
+    assert.equal(checklist?.active?.activeForm, 'Building');
+  });
+
+  it('reads a checklist the task tracker built without any whole list', () => {
+    const checklist = readSessionChecklist([{
+      type: 'assistant', isToolUse: true, toolName: 'TaskCreate', toolId: 'toolu_c1', timestamp: at(1),
+      toolInput: { subject: 'Write the tests' },
+    }]);
+
+    assert.deepEqual(checklist?.todos.map((todo) => [todo.content, todo.status]), [['Write the tests', 'pending']]);
+  });
+
   it('is absent when there is none or it is empty', () => {
     assert.equal(readSessionChecklist([{ type: 'user', content: 'hi', timestamp: at(0) }]), null);
     assert.equal(readSessionChecklist([checklistRow([])]), null);

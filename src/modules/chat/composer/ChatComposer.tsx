@@ -70,6 +70,8 @@ type ChatComposerProps = {
   onSelectModel: (model: string) => void;
   modelsLoading: boolean;
   tokenBudget: Record<string, unknown> | null;
+  /** Whether the provider's budget is the context in use now (see TokenUsageSummary). */
+  tokenBudgetMeasuresContext?: boolean;
   onShowTokenUsage: () => void;
   /** Compacts the conversation; the button is offered only when the provider can compact. */
   onCompact?: () => void;
@@ -164,6 +166,7 @@ export default function ChatComposer({
   onShowTokenUsage,
   onCompact,
   canCompact = false,
+  tokenBudgetMeasuresContext = true,
   slashCommandsCount,
   onToggleCommandMenu,
   hasInput,
@@ -494,7 +497,7 @@ export default function ChatComposer({
               <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
             )}
 
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            <TokenUsageSummary usage={tokenBudget} measuresContext={tokenBudgetMeasuresContext} onClick={onShowTokenUsage} />
 
             {canCompact && onCompact && (
               <CompactButton onCompact={onCompact} disabled={isLoading || isEditingSentMessage} />

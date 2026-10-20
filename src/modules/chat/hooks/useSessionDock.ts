@@ -12,9 +12,13 @@ import { SESSION_DOCK_COLUMN_MIN_WIDTH } from '@/shared/constants';
  * choice about the layout and is remembered; the sheet covers the chat, so it
  * is never restored and starts closed every time.
  *
+ * The sheet also belongs to what it was opened over: another session, or a
+ * dock left with nothing in it, closes it. Kept open, it would come back over
+ * the transcript, and take focus from the composer, when the next row appeared.
+ *
  * Used by chat's ChatInterface, which owns the row element the width is read from.
  */
-export function useSessionDock(chatRowRef: RefObject<HTMLElement>) {
+export function useSessionDock(chatRowRef: RefObject<HTMLElement>, sessionKey: string | null, hasContent: boolean) {
   // The width of the chat area, measured; null until the first measurement (or
   // where nothing can measure), so the dock is assumed to fit.
   const [chatRowWidth, setChatRowWidth] = useState<number | null>(null);
@@ -22,6 +26,15 @@ export function useSessionDock(chatRowRef: RefObject<HTMLElement>) {
   const [isColumnOpen, setColumnOpen] = useSessionDockOpen();
   // Whether the dock is open as a sheet, for this visit only.
   const [isSheetOpen, setSheetOpen] = useState(false);
+  // The session the sheet was last shown for, to notice a switch during render.
+  const [sheetSessionKey, setSheetSessionKey] = useState(sessionKey);
+
+  if (sheetSessionKey !== sessionKey) {
+    setSheetSessionKey(sessionKey);
+    setSheetOpen(false);
+  } else if (isSheetOpen && !hasContent) {
+    setSheetOpen(false);
+  }
 
   useLayoutEffect(() => {
     const row = chatRowRef.current;

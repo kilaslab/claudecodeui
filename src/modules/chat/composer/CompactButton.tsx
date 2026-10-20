@@ -23,7 +23,8 @@ function CompactButton({ onCompact, disabled }: CompactButtonProps) {
     <PromptInputButton
       tooltip={{ content: t('input.compact.tooltip', { defaultValue: 'Summarize the conversation to free up context' }) }}
       aria-label={label}
-      onClick={onCompact}
+      // Called bare: a click event passed through would arrive as `/compact`'s instructions.
+      onClick={() => onCompact()}
       disabled={disabled}
     >
       <FoldVerticalIcon />
