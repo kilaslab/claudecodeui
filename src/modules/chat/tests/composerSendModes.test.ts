@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import '@/modules/i18n';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
+import { createQueuedMessageServerFetch } from '@/modules/chat/tests/queuedMessageServerFake';
 import { readQueuedMessage, resetChatDrafts } from '@/shared/chatDrafts';
 import type { PermissionMode, Project, ProjectSession } from '@/shared/types';
 
@@ -55,7 +56,7 @@ const submit = async (mode?: 'steer' | 'interrupt') => {
 };
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })));
+  vi.stubGlobal('fetch', vi.fn(createQueuedMessageServerFetch().fetch));
   localStorage.clear();
   resetChatDrafts();
 });
@@ -148,7 +149,7 @@ test('handleSteerRejected reports whether it actually consumed a pending steer',
   let first: boolean | void = undefined;
   act(() => { first = view.result.current.handleSteerRejected(SESSION.id); });
   assert.equal(first, true, 'a pending steer for this session is consumed');
-  assert.equal(readQueuedMessage(SESSION.id)?.content, 'hello', 'the rejected steer text is re-queued, not lost');
+  await waitFor(() => assert.equal(readQueuedMessage(SESSION.id)?.content, 'hello', 'the rejected steer text is re-queued, not lost'));
 
   // ...and nothing is left pending for a second rejection (e.g. an ordinary
   // chat.send refused with the same code) to falsely swallow.
@@ -240,7 +241,6 @@ test('handleSteerRejected merges into an already-queued message instead of overw
     await view.result.current.handleSubmit({ preventDefault: () => undefined } as never);
   });
   assert.equal(readQueuedMessage(SESSION.id)?.content, 'first', 'sanity: first is queued');
-  const firstOptions = readQueuedMessage(SESSION.id)?.options;
 
   // Steer 'second' — the pending steer that will be rejected below.
   await act(async () => { view.result.current.setInput('second'); });
@@ -259,13 +259,12 @@ test('handleSteerRejected merges into an already-queued message instead of overw
 
   act(() => { view.result.current.handleSteerRejected(SESSION.id, 'STEER_UNSUPPORTED'); });
 
-  const merged = readQueuedMessage(SESSION.id);
-  assert.equal(
-    merged?.content,
+  await waitFor(() => assert.equal(
+    readQueuedMessage(SESSION.id)?.content,
     'first\n\nsecond',
     'the rejected steer is appended to the already-queued message, not overwriting it',
-  );
-  assert.deepEqual(merged?.options, firstOptions, 'the merge keeps the earlier queued message\'s send options');
+  ));
+  assert.equal(view.result.current.queuedDraft?.content, 'first\n\nsecond', 'and the card shows both');
 });
 
 test('a provider without steer support (e.g. codex) queues a steer submit instead of sending chat.steer', async () => {

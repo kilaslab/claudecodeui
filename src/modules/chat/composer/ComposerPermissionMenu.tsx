@@ -13,6 +13,7 @@ import {
 
 import type { PermissionMode } from '@/shared/types';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
+import { usePermissionNameFit } from '@/modules/chat/hooks/usePermissionNameFit';
 import {
   ComposerMenuHeading,
   ComposerMenuItem,
@@ -99,6 +100,18 @@ function ComposerPermissionMenu({
   const [isOpen, setIsOpen] = useState(false);
   const close = useCallback(() => setIsOpen(false), []);
   const { triggerRef, menuRef, anchor, updateAnchor } = useComposerMenuAnchor(isOpen, close, 22 * 16);
+  const modeLabel = (mode: PermissionMode) =>
+    t(`codex.modes.${mode}`, { defaultValue: getAppearance(mode).label || mode });
+  const activeModeLabel = modeLabel(permissionMode);
+  // The name is shown only where the composer has room for it, so it never
+  // pushes the model menu and the send button onto a second row. Plan mode,
+  // the one that changes nothing, keeps its name wherever it fits inside the
+  // composer, even when that gives the controls a row of their own.
+  const isNameShown = usePermissionNameFit(
+    triggerRef,
+    permissionModes.length > 0 ? activeModeLabel : null,
+    permissionMode === 'plan',
+  );
 
   if (permissionModes.length === 0) {
     return null;
@@ -106,8 +119,6 @@ function ComposerPermissionMenu({
 
   const activeAppearance = getAppearance(permissionMode);
   const ActiveIcon = activeAppearance.icon;
-  const modeLabel = (mode: PermissionMode) =>
-    t(`codex.modes.${mode}`, { defaultValue: getAppearance(mode).label || mode });
   const heading = t('composer.permissionHeading', {
     provider: providerLabel,
     defaultValue: 'How should {{provider}} actions be approved?',
@@ -122,21 +133,21 @@ function ComposerPermissionMenu({
           updateAnchor();
           setIsOpen((current) => !current);
         }}
-        className={`flex h-8 min-w-8 max-w-40 shrink-0 items-center justify-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-colors sm:max-w-48 ${activeAppearance.trigger}`}
+        className={`flex h-8 min-w-8 max-w-40 shrink-0 items-center justify-center gap-1.5 rounded-lg border text-xs font-medium transition-colors sm:max-w-48 ${isNameShown ? 'px-2' : 'w-8'} ${activeAppearance.trigger}`}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        // The visible mode name leads the accessible name, so what a screen
-        // reader announces matches what the button shows.
-        aria-label={`${modeLabel(permissionMode)}: ${heading}`}
+        // The mode name leads the accessible name, so what a screen reader
+        // announces starts with what the button shows.
+        aria-label={t('composer.permissionTriggerLabel', {
+          mode: activeModeLabel,
+          heading,
+          defaultValue: '{{mode}}: {{heading}}',
+        })}
         title={t('input.clickToChangeMode')}
       >
         <ActiveIcon className="h-4 w-4 shrink-0" />
-        {/* Named, not just drawn: the mode decides what the next message may
-            change. Plan mode stays named on narrow screens too, since it is
-            the one that changes nothing. */}
-        <span className={`truncate ${permissionMode === 'plan' ? '' : 'hidden sm:inline'}`}>
-          {modeLabel(permissionMode)}
-        </span>
+        {/* Named, not just drawn: the mode decides what the next message may change. */}
+        {isNameShown && <span className="truncate">{activeModeLabel}</span>}
       </button>
 
       {isOpen && anchor && createPortal(

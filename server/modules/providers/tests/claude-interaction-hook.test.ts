@@ -161,7 +161,7 @@ for (const mode of ['default', 'plan']) {
       const requests = turn.sent.filter((message) => message.kind === 'permission_request');
       assert.equal(requests.length, 1);
       const answered = { ...question, answers: { 'Which database?': 'Postgres' } };
-      resolveToolApproval(requests[0].requestId, { allow: true, updatedInput: answered });
+      resolveToolApproval(requests[0].requestId!, { allow: true, updatedInput: answered });
       assert.deepEqual(await pending, { behavior: 'allow', updatedInput: answered });
       assert.equal(turn.sent.filter((message) => message.kind === 'permission_request').length, 1);
     } finally {

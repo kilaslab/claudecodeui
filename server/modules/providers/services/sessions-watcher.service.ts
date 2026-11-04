@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fsPromises } from 'node:fs';
 
-import chokidar, { type ChokidarOptions, type FSWatcher } from 'chokidar';
+import chokidar, { type FSWatcher } from 'chokidar';
 
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
 import { broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
@@ -29,64 +29,54 @@ const PROVIDER_WATCH_PATHS: Array<{ provider: LLMProvider; rootPath: string }> =
   },
 ];
 
-/** Directories whose whole subtree the watchers skip. */
-const WATCHER_IGNORED_DIRECTORY_NAMES = new Set([
+/**
+ * What the watcher never descends into or reports. These used to be glob
+ * strings, which chokidar v4 no longer understands: it takes a path, a RegExp
+ * or a function, so the globs matched nothing and every file under every
+ * provider root was watched and, with polling, stat()ed every interval (#1156).
+ */
+const IGNORED_DIRECTORY_NAMES = new Set([
   'node_modules',
   '.git',
   'dist',
   'build',
+  // Claude writes a subagent's transcript and large tool outputs here. The
+  // synchronizer skips them already (#880); ignoring them here keeps the
+  // watcher from walking them at all.
   'subagents',
   'tool-results',
 ]);
-const WATCHER_IGNORED_FILE_NAMES = new Set(['.DS_Store']);
-const WATCHER_IGNORED_FILE_SUFFIXES = ['.tmp', '.swp'];
+const IGNORED_FILE_NAMES = new Set(['.DS_Store']);
+const IGNORED_FILE_SUFFIXES = ['.tmp', '.swp'];
 
 /**
- * Builds chokidar's `ignored` predicate for one provider watch root.
+ * Builds chokidar's `ignored` matcher for one watch root.
  *
- * chokidar 4 dropped glob support: a string in `ignored` only matches a path
- * that equals it, so the glob strings this list used to hold never matched,
- * and every subagent transcript and tool result was polled on each interval.
- * Names are matched against path segments *below* `rootPath` only, so a home
- * directory that itself sits under, say, `/srv/build/` never gets its whole
- * watch root ignored.
+ * Only the part of the path below `rootPath` is checked, so a home directory
+ * that happens to sit under `/build` or `/dist` cannot hide a whole provider.
  *
- * Exported for tests; `createSessionsWatcherOptions()` is the only runtime caller.
+ * Exported for the providers module's tests, which run it against chokidar on
+ * a real directory tree.
  */
-export function createWatcherIgnoredPredicate(rootPath: string): (watchedPath: string) => boolean {
-  return (watchedPath) => {
-    const relativePath = path.relative(rootPath, watchedPath);
-    if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+export function createWatcherIgnoredMatcher(rootPath: string): (filePath: string) => boolean {
+  return (filePath: string) => {
+    const relativePath = path.relative(rootPath, filePath);
+    // Outside the root is `..` as a whole component, or an absolute result
+    // (another drive on Windows). A child called `..archive` is still inside.
+    const isOutsideRoot = relativePath === '..'
+      || relativePath.startsWith(`..${path.sep}`)
+      || path.isAbsolute(relativePath);
+    if (!relativePath || isOutsideRoot) {
       return false;
     }
 
-    const segments = relativePath.split(/[\\/]/);
-    if (segments.some((segment) => WATCHER_IGNORED_DIRECTORY_NAMES.has(segment))) {
+    const segments = relativePath.split(path.sep);
+    const baseName = segments[segments.length - 1];
+    if (IGNORED_FILE_NAMES.has(baseName) || IGNORED_FILE_SUFFIXES.some((suffix) => baseName.endsWith(suffix))) {
       return true;
     }
 
-    const fileName = segments[segments.length - 1] ?? '';
-    return WATCHER_IGNORED_FILE_NAMES.has(fileName)
-      || WATCHER_IGNORED_FILE_SUFFIXES.some((suffix) => fileName.endsWith(suffix));
-  };
-}
-
-/**
- * Builds the chokidar options for one provider watch root.
- *
- * Exported for tests, so they exercise the options the watchers really run
- * with; `initializeSessionsWatcher()` is the only runtime caller.
- */
-export function createSessionsWatcherOptions(rootPath: string): ChokidarOptions {
-  return {
-    ignored: createWatcherIgnoredPredicate(rootPath),
-    persistent: true,
-    ignoreInitial: true,
-    followSymlinks: false,
-    depth: 6,
-    usePolling: true,
-    interval: 6_000,
-    binaryInterval: 6_000,
+    return segments.some((segment) => IGNORED_DIRECTORY_NAMES.has(segment));
   };
 }
 
@@ -257,7 +247,20 @@ export async function initializeSessionsWatcher(): Promise<void> {
     try {
       await fsPromises.mkdir(rootPath, { recursive: true });
 
-      const watcher = chokidar.watch(rootPath, createSessionsWatcherOptions(rootPath));
+      const watcher = chokidar.watch(rootPath, {
+        ignored: createWatcherIgnoredMatcher(rootPath),
+        persistent: true,
+        ignoreInitial: true,
+        followSymlinks: false,
+        depth: 6,
+        // Polling reaches filesystems that native events cannot: WSL's /mnt/c,
+        // network shares, some container mounts. Where native events do work,
+        // chokidar's own CHOKIDAR_USEPOLLING=false overrides this and a finished
+        // turn reaches the sidebar at once instead of up to 6 s later.
+        usePolling: true,
+        interval: 6_000,
+        binaryInterval: 6_000,
+      });
 
       watcher
         .on('add', (filePath: string) => {

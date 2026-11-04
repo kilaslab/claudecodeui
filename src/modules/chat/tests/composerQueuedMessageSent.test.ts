@@ -4,6 +4,7 @@ import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import '@/modules/i18n';
+import { createQueuedMessageServerFetch } from '@/modules/chat/tests/queuedMessageServerFake';
 import type * as ChatDrafts from '@/shared/chatDrafts';
 import type { PermissionMode, Project, ProjectSession } from '@/shared/types';
 
@@ -33,7 +34,7 @@ const SESSION: ProjectSession = { id: 'session-1' };
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
-  vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } })));
+  vi.stubGlobal('fetch', vi.fn(createQueuedMessageServerFetch().fetch));
   serverQueue.claimed = false;
   localStorage.clear();
 });

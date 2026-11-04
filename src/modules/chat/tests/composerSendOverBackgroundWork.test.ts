@@ -19,15 +19,15 @@ import type { BackgroundSendChoice, PermissionMode, Project, ProjectSession, Ses
  * server holds it while the work runs), or cancel.
  */
 
-const { writeQueuedMessage } = vi.hoisted(() => ({ writeQueuedMessage: vi.fn() }));
+const { appendQueuedMessage } = vi.hoisted(() => ({ appendQueuedMessage: vi.fn() }));
 
 vi.mock('@/shared/chatDrafts', async (importOriginal) => {
   const actual = await importOriginal<typeof ChatDrafts>();
   return {
     ...actual,
-    writeQueuedMessage: (...args: Parameters<typeof actual.writeQueuedMessage>) => {
-      writeQueuedMessage(...args);
-      actual.writeQueuedMessage(...args);
+    appendQueuedMessage: (...args: Parameters<typeof actual.appendQueuedMessage>) => {
+      appendQueuedMessage(...args);
+      return actual.appendQueuedMessage(...args);
     },
   };
 });
@@ -100,16 +100,21 @@ const submitAndAnswer = async (view: View, choice: BackgroundSendChoice) => {
 };
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url).includes('/api/assets/files')) {
       return new Response(JSON.stringify({ attachments: [UPLOADED] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (String(url).includes('/api/user/drafts/queued-message') && init?.method === 'POST') {
+      // Nothing else is queued: the server queues the message on its own.
+      const { queuedMessage } = JSON.parse(String(init.body)) as { queuedMessage: unknown };
+      return new Response(JSON.stringify({ success: true, queuedMessage, appended: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     return new Response('[]', { status: 200, headers: { 'Content-Type': 'application/json' } });
   }));
   // The drafts store is module state; a message queued by one test must not
   // be restored into the next one's composer.
   clearQueuedMessage(SESSION.id);
-  writeQueuedMessage.mockReset();
+  appendQueuedMessage.mockReset();
   localStorage.clear();
 });
 
@@ -126,7 +131,7 @@ test('a message sent on a session with background work goes straight out, and no
 
   assert.equal(view.result.current.backgroundSendPrompt, null, 'no prompt: the message does not stop the work');
   assert.equal(sends().length, 1);
-  assert.equal(writeQueuedMessage.mock.calls.length, 0, 'and it is not queued behind the work');
+  assert.equal(appendQueuedMessage.mock.calls.length, 0, 'and it is not queued behind the work');
   assert.equal(view.result.current.input, '', 'the composer clears as for any send');
 });
 
@@ -162,7 +167,7 @@ test('cancelling an edit prompt (the default answer to Enter, Esc or a click out
   await submitAndAnswer(view, 'cancel');
 
   assert.equal(sends().length, 0, 'declined: nothing is sent');
-  assert.equal(writeQueuedMessage.mock.calls.length, 0, 'and nothing is queued');
+  assert.equal(appendQueuedMessage.mock.calls.length, 0, 'and nothing is queued');
   assert.equal(view.result.current.input, 'second draft', 'and the draft stays in the composer');
   assert.equal(view.result.current.backgroundSendPrompt, null, 'and the prompt closes');
 });
@@ -175,7 +180,7 @@ test('send anyway sends the edit', async () => {
 
   // The edit is its own frame, not a plain send.
   assert.deepEqual(sends().map((message) => message.type), ['chat.edit-send']);
-  assert.equal(writeQueuedMessage.mock.calls.length, 0);
+  assert.equal(appendQueuedMessage.mock.calls.length, 0);
 });
 
 test('a second submit while the edit prompt is open neither opens another prompt nor sends', async () => {

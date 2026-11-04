@@ -168,7 +168,8 @@ function sendProtocolError(
   code: string,
   error: string,
   sessionId?: string,
-  requestType?: ChatRequestType
+  requestType?: ChatRequestType,
+  extra: AnyRecord = {}
 ): void {
   sendJson(ws, {
     kind: 'protocol_error',
@@ -177,6 +178,7 @@ function sendProtocolError(
     sessionId: sessionId ?? null,
     ...(requestType ? { requestType } : {}),
     timestamp: new Date().toISOString(),
+    ...extra,
   });
 }
 
@@ -231,12 +233,11 @@ function resolveVerifiedAttachments(clientOptions: AnyRecord): {
  */
 async function abortRunningRun(
   dependencies: ChatWebSocketDependencies,
-  provider: LLMProvider,
-  sessionId: string,
+  run: Parameters<typeof chatRunRegistry.completeRunIfCurrent>[0],
   options?: { replaced?: boolean },
 ): Promise<void> {
-  const aborted = await dependencies.runtime.abort(provider, sessionId);
-  chatRunRegistry.completeRun(sessionId, {
+  const aborted = await dependencies.runtime.abort(run.provider, run.appSessionId);
+  chatRunRegistry.completeRunIfCurrent(run, {
     exitCode: aborted ? 0 : 1,
     aborted: true,
     replaced: options?.replaced,
@@ -275,7 +276,7 @@ async function handleChatSend(
     const activeRun = chatRunRegistry.getRun(resolved.sessionId);
     if (activeRun) {
       carryOverConnections = activeRun.writer.listConnections();
-      await abortRunningRun(dependencies, activeRun.provider, resolved.sessionId, { replaced: true });
+      await abortRunningRun(dependencies, activeRun, { replaced: true });
     }
   }
 
@@ -751,7 +752,9 @@ async function handleChatAbort(
 
   const success = await dependencies.runtime.abort(run.provider, sessionId);
 
-  chatRunRegistry.completeRun(sessionId, {
+  // Scoped to the run that was stopped: a stop can take a round trip, and a
+  // new run of the session may have started by the time it returns.
+  chatRunRegistry.completeRunIfCurrent(run, {
     exitCode: success ? 0 : 1,
     aborted: true,
   });
@@ -799,6 +802,9 @@ async function handleChatStopTask(
       'NO_SUCH_TASK',
       `Session "${sessionId}" has no running background task "${taskId}".`,
       sessionId,
+      undefined,
+      // Names the task so the client can settle a chip whose end it missed.
+      { taskId },
     );
   }
 }
@@ -967,7 +973,7 @@ export async function runDetachedChatTurn(
     // interrupted run end before this turn's stream begins. The interrupted
     // run's own dispatch settles later through completeRunIfCurrent, which is
     // scoped to that run and cannot touch the one started here.
-    await abortRunningRun(dependencies, activeRun.provider, input.sessionId);
+    await abortRunningRun(dependencies, activeRun);
   }
 
   return dispatchRun(
