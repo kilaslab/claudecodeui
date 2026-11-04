@@ -276,17 +276,48 @@ test('AskUserQuestion after a plan is approved into auto still reaches the owner
   }
 });
 
-test('a plan mode run with no return mode, or a return mode on another mode, keeps the plain allow', async () => {
-  for (const [mode, planReturnMode] of [['plan', undefined], ['default', 'auto']] as const) {
-    const turn = await startTurn(mode, planReturnMode ? { planReturnMode } : {});
-    try {
-      const pending = turn.attempts[0].canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
-      const request = turn.sent.find((message) => message.kind === 'permission_request');
-      resolveToolApproval(request!.requestId as string, { allow: true });
-      assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN });
-    } finally {
-      await turn.end();
-    }
+test('a plan mode run with no return mode keeps the plain allow', async () => {
+  const turn = await startTurn('plan');
+  try {
+    const pending = turn.attempts[0].canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    resolveToolApproval(request!.requestId as string, { allow: true });
+    assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN });
+  } finally {
+    await turn.end();
+  }
+});
+
+test('a plan the model enters on its own returns to the mode the run started in, not a return mode sent with it', async () => {
+  const turn = await startTurn('default', { planReturnMode: 'auto' });
+  try {
+    const pending = turn.attempts[0].canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    resolveToolApproval(request!.requestId as string, { allow: true });
+    assert.deepEqual(await pending, { behavior: 'allow', updatedInput: PLAN, updatedPermissions: setMode('default') });
+  } finally {
+    await turn.end();
+  }
+});
+
+test('a plan the model enters on its own in an auto run is built in auto, asking the owner once', async () => {
+  const turn = await startTurn('auto');
+  try {
+    const options = turn.attempts[0];
+    const entry = preToolUseHook(options);
+
+    const viaHook = entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: 'ExitPlanMode', tool_input: PLAN }, 'toolu_plan', { signal: new AbortController().signal });
+    const request = turn.sent.find((message) => message.kind === 'permission_request');
+    assert.ok(request?.requestId);
+    resolveToolApproval(request.requestId, { allow: true });
+    assert.equal((await viaHook).hookSpecificOutput?.permissionDecision, 'allow');
+
+    const viaPermissionStep = await options.canUseTool!('ExitPlanMode', PLAN, { signal: new AbortController().signal, toolUseID: 'toolu_plan' });
+
+    assert.equal(turn.sent.filter((message) => message.kind === 'permission_request').length, 1, 'asked once');
+    assert.deepEqual(viaPermissionStep, { behavior: 'allow', updatedInput: PLAN, updatedPermissions: setMode('auto') });
+  } finally {
+    await turn.end();
   }
 });
 

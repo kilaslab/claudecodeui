@@ -1802,8 +1802,12 @@ async function queryClaudeSDK(
     // approved the CLI returns to the mode it started in (`default`), while the
     // composer shows the mode the user had before planning. The composer says
     // which one it shows, and the approval carries it to the CLI as a session
-    // permission update. Only a plan mode run has a return mode.
-    let planReturnMode = options.permissionMode === 'plan' ? planReturnModeOf(options) : null;
+    // permission update. A plan the model enters on its own returns to the mode
+    // the run started in, which is what the composer goes back to as well.
+    const launchMode = sdkOptions.permissionMode ?? 'default';
+    let planReturnMode = options.permissionMode === 'plan'
+      ? planReturnModeOf(options)
+      : PLAN_RETURN_MODES.has(launchMode) ? launchMode : null;
 
     // One decision per tool use. In a plan mode run that will leave plan for a
     // mode that skips `canUseTool` the owner is asked from a PreToolUse hook
