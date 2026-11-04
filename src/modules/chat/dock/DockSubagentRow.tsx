@@ -7,7 +7,7 @@ import { useAgentInspector } from '@/modules/chat/context/AgentInspectorContext'
 import { SubagentGlyph } from '@/modules/chat/dock/SubagentGlyph';
 import { formatTaskDuration } from '@/modules/chat/utils/backgroundTasks';
 import { cn } from '@/shared/utils';
-import type { ChatMessage, SessionRosterEntry } from '@/shared/types';
+import type { AgentInspectorTarget, ChatMessage, SessionRosterEntry } from '@/shared/types';
 
 type DockSubagentRowProps = {
   entry: SessionRosterEntry;
@@ -21,6 +21,8 @@ type DockSubagentRowProps = {
   onReveal: (message: ChatMessage) => void;
   /** Loads the rest of the transcript, for a task whose launch row is not loaded yet. */
   onLoadAll: () => void;
+  /** Shows the agent's run in the dock, in place of its list. */
+  onInspect: (target: AgentInspectorTarget) => void;
 };
 
 /** What a row says about how far its work has got, in words. */
@@ -57,11 +59,12 @@ const ICON_BUTTON_CLASS = 'flex h-6 w-6 items-center justify-center rounded text
 
 /**
  * Rendered by chat's SessionDock: one subagent, workflow or background command.
- * Clicking it brings its card into view; hovering (or focusing) it offers to
- * inspect the agent and, while it runs, to stop it. Stopping is its own icon,
+ * Clicking an agent shows its run in the dock; clicking anything else brings
+ * its card into view. Hovering (or focusing) it offers to open the agent in
+ * the wide inspector and, while it runs, to stop it. Stopping is its own icon,
  * never the row, so a stray click cannot end someone's work.
  */
-export const DockSubagentRow = memo(({ entry, now, sessionId, sendMessage, onReveal, onLoadAll }: DockSubagentRowProps) => {
+export const DockSubagentRow = memo(({ entry, now, sessionId, sendMessage, onReveal, onLoadAll, onInspect }: DockSubagentRowProps) => {
   const { t } = useTranslation('chat');
   const inspector = useAgentInspector();
   const isRunning = entry.status === 'running';
@@ -78,7 +81,10 @@ export const DockSubagentRow = memo(({ entry, now, sessionId, sendMessage, onRev
     : entry.status === 'stopped'
       ? t('dock.subagents.stopped', 'Stopped')
       : '';
-  const canInspect = Boolean(inspector && sessionId && entry.agentId);
+  const inspectTarget: AgentInspectorTarget | null = sessionId && entry.agentId
+    ? { sessionId, agentId: entry.agentId, title: name, isRunning }
+    : null;
+  const canInspect = Boolean(inspector && inspectTarget);
   const canStop = Boolean(isRunning && sessionId && entry.taskId);
 
   const body = (
@@ -104,13 +110,19 @@ export const DockSubagentRow = memo(({ entry, now, sessionId, sendMessage, onRev
     (canInspect || canStop) && 'max-md:pr-16 [@media(hover:none)]:pr-16',
   );
 
+  const rowButtonClass = cn(bodyClass, 'w-full transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring');
+
   return (
     <li className="group relative">
-      {entry.message ? (
+      {inspectTarget ? (
+        <button type="button" onClick={() => onInspect(inspectTarget)} className={rowButtonClass}>
+          {body}
+        </button>
+      ) : entry.message ? (
         <button
           type="button"
           onClick={() => onReveal(entry.message as ChatMessage)}
-          className={cn(bodyClass, 'w-full transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring')}
+          className={rowButtonClass}
         >
           {body}
         </button>
@@ -123,7 +135,7 @@ export const DockSubagentRow = memo(({ entry, now, sessionId, sendMessage, onRev
           type="button"
           onClick={onLoadAll}
           title={t('common:workflow.taskRowNotLoaded', 'Launched earlier in this conversation; click to load it')}
-          className={cn(bodyClass, 'w-full transition-colors hover:bg-muted/60 focus-visible:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring')}
+          className={rowButtonClass}
         >
           {body}
         </button>
@@ -138,12 +150,7 @@ export const DockSubagentRow = memo(({ entry, now, sessionId, sendMessage, onRev
               type="button"
               aria-label={t('dock.subagents.inspect', { name, defaultValue: 'Inspect {{name}}' })}
               title={t('common:agentInspector.inspect', 'Inspect agent')}
-              onClick={() => inspector?.inspectAgent({
-                sessionId: sessionId as string,
-                agentId: entry.agentId as string,
-                title: name,
-                isRunning,
-              })}
+              onClick={() => inspectTarget && inspector?.inspectAgent(inspectTarget)}
               className={ICON_BUTTON_CLASS}
             >
               <Maximize2 className="h-3 w-3" />

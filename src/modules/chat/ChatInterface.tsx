@@ -727,6 +727,9 @@ function ChatInterface({
                   onReveal={revealMessage}
                   onLoadAll={loadAllMessages}
                   onClose={closeDock}
+                  createDiff={createDiff}
+                  onFileOpen={onFileOpen}
+                  selectedProject={selectedProject}
                 />
               )}
             </AgentInspectorProvider>

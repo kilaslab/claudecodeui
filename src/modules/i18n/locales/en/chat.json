@@ -453,6 +453,7 @@
       "toolsUsed_other": "{{count}} tools",
       "now": "now {{tool}}",
       "inspect": "Inspect {{name}}",
+      "back": "Back to the list",
       "stop": "Stop {{name}}",
       "stopTitle": "Stop",
       "showMore": "Show {{count}} more"

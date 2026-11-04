@@ -4,9 +4,10 @@ import { useTranslation } from 'react-i18next';
 
 import { DockChecklist } from '@/modules/chat/dock/DockChecklist';
 import { DockSubagentRow } from '@/modules/chat/dock/DockSubagentRow';
+import { AgentInspectorPanel } from '@/modules/chat/inspector/AgentInspectorPanel';
 import { SESSION_DOCK_ELEMENT_ID } from '@/shared/constants';
 import { cn } from '@/shared/utils';
-import type { ChatMessage, SessionChecklist, SessionRoster } from '@/shared/types';
+import type { AgentInspectorTarget, ChatMessage, DiffLine, Project, SessionChecklist, SessionRoster } from '@/shared/types';
 
 /** Finished rows listed before "Show more"; a long session has dozens, and the running ones always show. */
 const FINISHED_VISIBLE_LIMIT = 8;
@@ -25,6 +26,9 @@ type SessionDockProps = {
   onReveal: (message: ChatMessage) => void;
   onLoadAll: () => void;
   onClose: () => void;
+  createDiff: (oldStr: string, newStr: string) => DiffLine[];
+  onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
+  selectedProject?: Project | null;
 };
 
 /**
@@ -34,12 +38,14 @@ type SessionDockProps = {
  * it behaves as the modal it looks like: it takes focus, Escape closes it
  * ahead of the transcript's Escape-to-stop, closing it hands focus back to
  * where it was, and showing a row in the transcript closes it so the row can
- * be seen. Opened from DockCapsules; closing it never stops anything.
+ * be seen. Clicking an agent shows its run in place of the list, so following
+ * it never means scrolling the transcript. Opened from DockCapsules; closing
+ * it never stops anything.
  *
  * Memoized, with stable row handlers: the chat view re-renders on every
  * keystroke and streamed token, and the dock only needs to when its rows do.
  */
-export const SessionDock = memo(function SessionDock({ roster, checklist, layout, sessionId, sendMessage, onReveal, onLoadAll, onClose }: SessionDockProps) {
+export const SessionDock = memo(function SessionDock({ roster, checklist, layout, sessionId, sendMessage, onReveal, onLoadAll, onClose, createDiff, onFileOpen, selectedProject }: SessionDockProps) {
   const { t } = useTranslation('chat');
   const isSheet = layout === 'sheet';
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -48,6 +54,9 @@ export const SessionDock = memo(function SessionDock({ roster, checklist, layout
   // The wall clock the running rows count their elapsed time against; it only
   // ticks while something runs.
   const [now, setNow] = useState(() => Date.now());
+  // The agents opened from the list, outermost first; the dock shows the last
+  // one's run instead of the list until it goes back.
+  const [inspectedStack, setInspectedStack] = useState<AgentInspectorTarget[]>([]);
   const hasRunning = roster.running.length > 0;
 
   useEffect(() => {
@@ -101,7 +110,18 @@ export const SessionDock = memo(function SessionDock({ roster, checklist, layout
       onClose();
     }
   }, [isSheet, onClose, onLoadAll]);
-  const rowProps = { sessionId, sendMessage, onReveal: revealRow, onLoadAll: loadAllRows };
+  const inspectRow = useCallback((target: AgentInspectorTarget) => setInspectedStack([target]), []);
+  const openChildAgent = useCallback((target: AgentInspectorTarget) => setInspectedStack((previous) => [...previous, target]), []);
+  const backToAgent = useCallback((index: number) => setInspectedStack((previous) => previous.slice(0, index + 1)), []);
+  const backToList = useCallback(() => setInspectedStack([]), []);
+  const rowProps = { sessionId, sendMessage, onReveal: revealRow, onLoadAll: loadAllRows, onInspect: inspectRow };
+
+  // An opened agent keeps re-reading its run while the roster says it runs, and
+  // reads it once more when it settles.
+  const runningAgentIds = new Set(roster.running.map((entry) => entry.agentId).filter(Boolean));
+  const inspectedAgents = inspectedStack.map((target) => (
+    target.runId ? target : { ...target, isRunning: runningAgentIds.has(target.agentId) }
+  ));
 
   return (
     <>
@@ -126,7 +146,7 @@ export const SessionDock = memo(function SessionDock({ roster, checklist, layout
           'flex flex-col',
           isSheet
             ? 'fixed right-12 z-40 w-[min(22rem,calc(100vw-4.5rem))]'
-            : 'w-80 flex-shrink-0 py-3 pr-10',
+            : cn('flex-shrink-0 py-3 pr-10', inspectedAgents.length > 0 ? 'w-[28rem]' : 'w-80'),
         )}
       >
         <div className={cn('flex max-h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground', isSheet ? 'shadow-lg' : 'shadow-sm')}>
@@ -144,6 +164,18 @@ export const SessionDock = memo(function SessionDock({ roster, checklist, layout
             </button>
           </div>
 
+          {inspectedAgents.length > 0 ? (
+            <AgentInspectorPanel
+              stack={inspectedAgents}
+              onOpenChild={openChildAgent}
+              onBackTo={backToAgent}
+              onClose={backToList}
+              variant="dock"
+              createDiff={createDiff}
+              onFileOpen={onFileOpen}
+              selectedProject={selectedProject}
+            />
+          ) : (
           <div className="min-h-0 flex-1 overflow-y-auto">
             {checklist && <DockChecklist checklist={checklist} />}
 
@@ -188,6 +220,7 @@ export const SessionDock = memo(function SessionDock({ roster, checklist, layout
               </section>
             )}
           </div>
+          )}
         </div>
       </aside>
     </>

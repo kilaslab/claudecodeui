@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import '@/modules/i18n';
@@ -7,6 +7,26 @@ import { DockCapsules } from '@/modules/chat/dock/DockCapsules';
 import { SessionDock } from '@/modules/chat/dock/SessionDock';
 import { buildSessionRoster, readSessionChecklist } from '@/modules/chat/utils/sessionRoster';
 import type { BackgroundTaskSummary, ChatMessage } from '@/shared/types';
+
+const { subagentActivity } = vi.hoisted(() => ({
+  subagentActivity: vi.fn(async (_sessionId: string, agentId: string) => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      success: true,
+      data: {
+        agent: { id: agentId, type: 'qtd-executor' },
+        prompt: 'Lint the pointer cards',
+        activity: [{ kind: 'text', content: 'Reading the pointer card lints' }],
+        activityCount: 1,
+      },
+    }),
+  })),
+}));
+vi.mock('@/shared/api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  api: { subagentActivity },
+}));
 
 /**
  * The right-hand dock lists the session's checklist and its subagents,
@@ -20,6 +40,7 @@ import type { BackgroundTaskSummary, ChatMessage } from '@/shared/types';
 const LAUNCHED_AT = Date.parse('2026-08-21T10:32:10.000Z');
 
 beforeEach(() => {
+  subagentActivity.mockClear();
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(LAUNCHED_AT + 65_000);
 });
@@ -58,6 +79,7 @@ const renderDock = ({ messages, tasks, sendMessage = () => true, onReveal = () =
       onReveal={onReveal}
       onLoadAll={onLoadAll}
       onClose={onClose}
+      createDiff={() => []}
     />
   );
   return render(inspectAgent
@@ -233,6 +255,7 @@ describe('stopping from the dock', () => {
 
     fireEvent.click(rowByName(/Survey the repo/));
     expect(sendMessage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the list' }));
 
     const stops = screen.getAllByRole('button', { name: /^Stop / });
     expect(stops).toHaveLength(3);
@@ -261,6 +284,36 @@ describe('stopping from the dock', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Inspect Survey the repo' }));
 
     expect(inspectAgent).toHaveBeenCalledWith({ sessionId: 'session-1', agentId: 'a1', title: 'Survey the repo', isRunning: true });
+  });
+
+  it('shows an agent\'s run in the dock when its row is clicked, instead of scrolling the transcript to it', async () => {
+    const onReveal = vi.fn();
+    const row = toolRow({ toolName: 'Agent', toolId: 'toolu_agent_1', subagent: { id: 'a1', description: 'T4 FE pointer card lints', status: 'running' } });
+    renderDock({ messages: [row], onReveal });
+
+    fireEvent.click(rowByName(/T4 FE pointer card lints/));
+
+    expect(onReveal).not.toHaveBeenCalled();
+    expect(subagentActivity).toHaveBeenCalledWith('session-1', 'a1', 'full');
+    expect(await screen.findByText('Lint the pointer cards')).toBeTruthy();
+    expect(await screen.findByText('Reading the pointer card lints')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Subagents' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to the list' }));
+
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Subagents' })).toBeTruthy());
+    expect(rowByName(/T4 FE pointer card lints/)).toBeTruthy();
+  });
+
+  it('still brings a workflow or a command into view, having no run of its own to show', () => {
+    const onReveal = vi.fn();
+    const command = toolRow({ toolName: 'Bash', toolId: 'toolu_bash_1', taskStatus: { status: 'running', description: 'npm test' } });
+    renderDock({ messages: [command], onReveal });
+
+    fireEvent.click(rowByName(/npm test/));
+
+    expect(onReveal).toHaveBeenCalledWith(command);
+    expect(subagentActivity).not.toHaveBeenCalled();
   });
 
   it('offers no inspector where there is none', () => {
@@ -531,7 +584,7 @@ describe('the dock\'s clock', () => {
     vi.setSystemTime(LAUNCHED_AT + 65_000);
     const messages = [toolRow({ toolName: 'Workflow', toolId: 'toolu_workflow_1', taskStatus: { status: 'running', taskId: 'w1', workflowName: 'audit' } })];
     const view = render(
-      <SessionDock roster={buildSessionRoster(messages, undefined)} checklist={null} layout="column" sessionId="session-1" sendMessage={() => true} onReveal={() => {}} onLoadAll={() => {}} onClose={() => {}} />,
+      <SessionDock roster={buildSessionRoster(messages, undefined)} checklist={null} layout="column" sessionId="session-1" sendMessage={() => true} onReveal={() => {}} onLoadAll={() => {}} onClose={() => {}} createDiff={() => []} />,
     );
     expect(screen.getByRole('listitem').textContent).toContain('1m 5s');
 
@@ -540,7 +593,7 @@ describe('the dock\'s clock', () => {
 
     const finishedMessages = [toolRow({ toolName: 'Workflow', toolId: 'toolu_workflow_1', taskStatus: { status: 'completed', taskId: 'w1', workflowName: 'audit' } })];
     view.rerender(
-      <SessionDock roster={buildSessionRoster(finishedMessages, undefined)} checklist={null} layout="column" sessionId="session-1" sendMessage={() => true} onReveal={() => {}} onLoadAll={() => {}} onClose={() => {}} />,
+      <SessionDock roster={buildSessionRoster(finishedMessages, undefined)} checklist={null} layout="column" sessionId="session-1" sendMessage={() => true} onReveal={() => {}} onLoadAll={() => {}} onClose={() => {}} createDiff={() => []} />,
     );
     expect(vi.getTimerCount()).toBe(0);
     view.unmount();
